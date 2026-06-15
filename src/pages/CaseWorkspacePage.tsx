@@ -4,15 +4,25 @@ import { EvidenceList } from "../components/evidence/EvidenceList";
 import { ImportDropzone } from "../components/evidence/ImportDropzone";
 import { FindingList } from "../components/findings/FindingList";
 import { ActionButton } from "../components/ui/ActionButton";
+import { EmptyState } from "../components/ui/EmptyState";
 import { MetricCard } from "../components/ui/MetricCard";
-import { getCaseById, getFilesForCase, getFindingsForCase } from "../data/selectors";
+import { useCaseWorkspace } from "../hooks/useCaseWorkspace";
 
 export function CaseWorkspacePage() {
   const { caseId } = useParams();
-  const caseRecord = getCaseById(caseId);
-  const files = getFilesForCase(caseRecord.id);
-  const findings = getFindingsForCase(caseRecord.id);
+  const { data, error, importError, importPaths, isImporting, isLoading } = useCaseWorkspace(caseId);
+  const caseRecord = data?.caseRecord;
+  const files = data?.files ?? [];
+  const findings = data?.findings ?? [];
   const pendingCount = files.filter((file) => file.status === "pending").length;
+
+  if (isLoading) {
+    return <EmptyState description="Loading case workspace." title="Loading case" />;
+  }
+
+  if (error || !caseRecord) {
+    return <EmptyState description={error ?? "Case not found."} title="Could not load case" />;
+  }
 
   return (
     <div className="space-y-6">
@@ -25,7 +35,7 @@ export function CaseWorkspacePage() {
       </div>
       <div className="grid grid-cols-[420px_1fr] gap-6">
         <div className="space-y-6">
-          <ImportDropzone />
+          <ImportDropzone config={data?.importConfig} error={importError} isImporting={isImporting} onImport={importPaths} />
           <EvidenceList files={files} />
         </div>
         <div className="space-y-6">

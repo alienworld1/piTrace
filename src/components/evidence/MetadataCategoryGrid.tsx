@@ -11,6 +11,9 @@ export function MetadataCategoryGrid({ fields }: MetadataCategoryGridProps) {
     <section className="panel-edge rounded-xl p-5">
       <h2 className="font-display text-xl font-semibold text-ink">Metadata categories</h2>
       <div className="mt-5 grid grid-cols-3 gap-4">
+        {categories.length === 0 ? (
+          <p className="col-span-3 rounded-lg border border-line bg-surface px-4 py-5 text-sm text-muted">Metadata extraction has not run for this file yet.</p>
+        ) : null}
         {categories.map((category) => {
           const categoryFields = fields.filter((field) => (field.normalizedCategory ?? "other") === category);
 

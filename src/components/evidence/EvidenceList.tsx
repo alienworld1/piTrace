@@ -1,6 +1,6 @@
 import { Link } from "react-router";
 import type { EvidenceFile } from "../../types/forensics";
-import { formatBytes, shortHash } from "../../utils/format";
+import { formatBytes } from "../../utils/format";
 import { Badge } from "../ui/Badge";
 
 interface EvidenceListProps {
@@ -15,6 +15,9 @@ export function EvidenceList({ files }: EvidenceListProps) {
         <Badge tone="neutral">{files.length} items</Badge>
       </div>
       <div className="mt-5 space-y-3">
+        {files.length === 0 ? (
+          <p className="rounded-lg border border-line bg-surface px-4 py-5 text-sm text-muted">No evidence files imported yet.</p>
+        ) : null}
         {files.map((file) => (
           <Link
             className="block rounded-lg border border-line bg-surface px-4 py-3 transition hover:border-cyan/50 hover:bg-panel-high"
@@ -30,7 +33,7 @@ export function EvidenceList({ files }: EvidenceListProps) {
               </div>
               <Badge tone={file.status}>{file.status}</Badge>
             </div>
-            <p className="mt-3 truncate technical text-xs text-primary-soft">SHA-256 {shortHash(file.sha256)}</p>
+            {file.errorMessage ? <p className="mt-2 text-xs text-danger">{file.errorMessage}</p> : null}
           </Link>
         ))}
       </div>

@@ -15,6 +15,9 @@ export function FindingList({ caseId, findings }: FindingListProps) {
         <Badge tone="neutral">{findings.length} indicators</Badge>
       </div>
       <div className="mt-5 space-y-3">
+        {findings.length === 0 ? (
+          <p className="rounded-lg border border-line bg-surface px-4 py-5 text-sm text-muted">No findings have been generated yet.</p>
+        ) : null}
         {findings.map((finding) => (
           <Link
             className="block rounded-lg border border-line bg-surface p-4 transition hover:border-cyan/50 hover:bg-panel-high"

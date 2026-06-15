@@ -2,8 +2,7 @@ import { NavLink } from "react-router";
 
 const navItems = [
   { label: "Cases", to: "/" },
-  { label: "Workspace", to: "/cases/case-aquila" },
-  { label: "Report", to: "/cases/case-aquila/report" },
+  { label: "New case", to: "/cases/new" },
 ];
 
 export function Sidebar() {
@@ -39,7 +38,7 @@ export function Sidebar() {
 
       <div className="mt-auto rounded-xl border border-line bg-panel p-4">
         <p className="text-xs font-semibold uppercase tracking-[0.05em] text-primary-soft">Local status</p>
-        <p className="mt-2 text-sm leading-6 text-muted">No files leave this device. Backend actions are not wired in this UI shell.</p>
+        <p className="mt-2 text-sm leading-6 text-muted">No files leave this device. Imports record local paths and file identity.</p>
       </div>
     </aside>
   );

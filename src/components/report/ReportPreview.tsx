@@ -36,6 +36,9 @@ export function ReportPreview({ caseRecord, files, findings }: ReportPreviewProp
       </div>
 
       <div className="mt-8 space-y-4">
+        {files.length === 0 ? (
+          <p className="rounded-lg border border-line bg-surface px-4 py-5 text-sm text-muted">No evidence files are available for this report yet.</p>
+        ) : null}
         {files.map((file) => (
           <article className="rounded-lg border border-line bg-surface p-4" key={file.id}>
             <div className="flex items-center justify-between">

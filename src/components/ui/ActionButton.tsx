@@ -6,6 +6,8 @@ interface ActionButtonProps {
   to?: string;
   variant?: "primary" | "secondary" | "technical";
   disabled?: boolean;
+  onClick?: () => void | Promise<void>;
+  type?: "button" | "submit";
 }
 
 const variantClasses = {
@@ -14,7 +16,7 @@ const variantClasses = {
   technical: "border-line bg-panel-high text-muted technical text-xs uppercase tracking-[0.05em] hover:border-cyan hover:text-cyan",
 };
 
-export function ActionButton({ children, to, variant = "secondary", disabled = false }: ActionButtonProps) {
+export function ActionButton({ children, to, variant = "secondary", disabled = false, onClick, type = "button" }: ActionButtonProps) {
   const className = `inline-flex min-h-10 items-center justify-center rounded-lg border px-4 text-sm font-semibold transition ${variantClasses[variant]} ${disabled ? "opacity-45" : ""}`;
 
   if (to && !disabled) {
@@ -26,7 +28,7 @@ export function ActionButton({ children, to, variant = "secondary", disabled = f
   }
 
   return (
-    <button className={className} disabled={disabled} type="button">
+    <button className={className} disabled={disabled} onClick={onClick} type={type}>
       {children}
     </button>
   );

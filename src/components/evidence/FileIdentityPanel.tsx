@@ -1,5 +1,5 @@
 import type { EvidenceFile } from "../../types/forensics";
-import { formatBytes, formatDateTime, shortHash } from "../../utils/format";
+import { formatBytes, formatDateTime } from "../../utils/format";
 import { Badge } from "../ui/Badge";
 
 interface FileIdentityPanelProps {
@@ -35,11 +35,9 @@ export function FileIdentityPanel({ file }: FileIdentityPanelProps) {
           <dd className="mt-1 text-ink">{formatDateTime(file.importedAt)}</dd>
         </div>
       </dl>
-      <div className="mt-6 rounded-lg border border-line bg-base p-4">
-        <p className="text-xs font-semibold uppercase tracking-[0.05em] text-primary-soft">Hashes</p>
-        <p className="mt-3 technical text-sm text-ink">SHA-256 {shortHash(file.sha256)}</p>
-        <p className="mt-2 technical text-sm text-muted">MD5 {shortHash(file.md5)}</p>
-      </div>
+      {file.errorMessage ? (
+        <div className="mt-4 rounded-lg border border-danger/40 bg-danger-strong/20 p-4 text-sm text-danger">{file.errorMessage}</div>
+      ) : null}
     </section>
   );
 }

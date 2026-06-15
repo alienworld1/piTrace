@@ -1,4 +1,4 @@
-export type EvidenceStatus = "pending" | "hashing" | "analyzing" | "complete" | "error";
+export type EvidenceStatus = "pending" | "analyzing" | "complete" | "error";
 export type Severity = "low" | "medium" | "high";
 export type Confidence = "low" | "medium" | "high";
 export type FindingCategory =
@@ -26,6 +26,12 @@ export interface CaseRecord {
   updatedAt: string;
 }
 
+export interface CaseInput {
+  name: string;
+  examinerName?: string;
+  notes?: string;
+}
+
 export interface EvidenceFile {
   id: string;
   caseId: string;
@@ -35,8 +41,6 @@ export interface EvidenceFile {
   detectedMimeType?: string;
   detectedFileType?: string;
   sizeBytes: number;
-  sha256?: string;
-  md5?: string;
   importedAt: string;
   analyzedAt?: string;
   status: EvidenceStatus;
@@ -72,4 +76,14 @@ export interface CaseReport {
   format: "html" | "json" | "pdf";
   includeRawMetadata: boolean;
   outputPath?: string;
+}
+
+export interface ImportDialogFilter {
+  name: string;
+  extensions: string[];
+}
+
+export interface ImportConfig {
+  supportedExtensions: string[];
+  dialogFilters: ImportDialogFilter[];
 }

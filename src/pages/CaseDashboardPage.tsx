@@ -2,30 +2,39 @@ import { CaseCard } from "../components/cases/CaseCard";
 import { EmptyState } from "../components/ui/EmptyState";
 import { MetricCard } from "../components/ui/MetricCard";
 import { PanelHeader } from "../components/ui/PanelHeader";
-import { mockCases } from "../data/mockData";
-import { getFilesForCase, getFindingsForCase } from "../data/selectors";
+import { useCaseDashboard } from "../hooks/useCaseDashboard";
 
 export function CaseDashboardPage() {
-  const fileCount = mockCases.reduce((total, caseRecord) => total + getFilesForCase(caseRecord.id).length, 0);
-  const findingCount = mockCases.reduce((total, caseRecord) => total + getFindingsForCase(caseRecord.id).length, 0);
+  const { data, error, isLoading } = useCaseDashboard();
+  const cases = data?.cases ?? [];
+  const items = data?.items ?? [];
 
   return (
     <div className="space-y-6">
       <PanelHeader eyebrow="Case dashboard" title="Local cases" />
       <div className="grid grid-cols-3 gap-4">
-        <MetricCard detail="Stored locally" label="Cases" value={String(mockCases.length)} />
-        <MetricCard detail="Across mock cases" label="Evidence files" value={String(fileCount)} />
-        <MetricCard detail="Rule-based indicators" label="Findings" value={String(findingCount)} />
+        <MetricCard detail="Stored locally" label="Cases" value={String(cases.length)} />
+        <MetricCard detail="Across local cases" label="Evidence files" value={String(data?.fileCount ?? 0)} />
+        <MetricCard detail="Rule-based indicators" label="Findings" value={String(data?.findingCount ?? 0)} />
       </div>
-      {mockCases.length === 0 ? (
+      {isLoading ? <EmptyState description="Loading local case records." title="Loading cases" /> : null}
+      {error ? <EmptyState description={error} title="Could not load cases" /> : null}
+      {!isLoading && !error && cases.length === 0 ? (
         <EmptyState description="No cases yet. Create a case to begin local forensic metadata analysis." title="No cases yet" />
-      ) : (
+      ) : null}
+      {!isLoading && !error && cases.length > 0 ? (
         <div className="grid grid-cols-2 gap-4">
-          {mockCases.map((caseRecord) => (
-            <CaseCard caseRecord={caseRecord} key={caseRecord.id} />
+          {items.map((item) => (
+            <CaseCard
+              caseRecord={item.caseRecord}
+              fileCount={item.fileCount}
+              findingCount={item.findingCount}
+              highCount={item.highCount}
+              key={item.caseRecord.id}
+            />
           ))}
         </div>
-      )}
+      ) : null}
     </div>
   );
 }

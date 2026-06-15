@@ -8,9 +8,6 @@ export function TopBar() {
         <h1 className="font-display text-2xl font-semibold text-ink">Forensic metadata triage</h1>
       </div>
       <div className="flex items-center gap-3">
-        <ActionButton disabled variant="technical">
-          Import files
-        </ActionButton>
         <ActionButton to="/cases/new" variant="primary">
           New case
         </ActionButton>

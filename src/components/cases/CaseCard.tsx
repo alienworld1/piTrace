@@ -1,18 +1,16 @@
 import { Link } from "react-router";
 import type { CaseRecord } from "../../types/forensics";
-import { getFilesForCase, getFindingsForCase } from "../../data/selectors";
 import { formatDateTime } from "../../utils/format";
 import { Badge } from "../ui/Badge";
 
 interface CaseCardProps {
   caseRecord: CaseRecord;
+  fileCount: number;
+  findingCount: number;
+  highCount: number;
 }
 
-export function CaseCard({ caseRecord }: CaseCardProps) {
-  const files = getFilesForCase(caseRecord.id);
-  const findings = getFindingsForCase(caseRecord.id);
-  const highCount = findings.filter((finding) => finding.severity === "high").length;
-
+export function CaseCard({ caseRecord, fileCount, findingCount, highCount }: CaseCardProps) {
   return (
     <Link className="panel-edge block rounded-xl p-5 transition hover:border-cyan/50 hover:bg-panel-high" to={`/cases/${caseRecord.id}`}>
       <div className="flex items-start justify-between gap-4">
@@ -25,11 +23,11 @@ export function CaseCard({ caseRecord }: CaseCardProps) {
       <div className="mt-6 grid grid-cols-3 gap-3 text-sm">
         <div>
           <p className="text-muted">Files</p>
-          <p className="mt-1 technical text-ink">{files.length}</p>
+          <p className="mt-1 technical text-ink">{fileCount}</p>
         </div>
         <div>
           <p className="text-muted">Findings</p>
-          <p className="mt-1 technical text-ink">{findings.length}</p>
+          <p className="mt-1 technical text-ink">{findingCount}</p>
         </div>
         <div>
           <p className="text-muted">Updated</p>

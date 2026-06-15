@@ -1,16 +1,33 @@
-import { ActionButton } from "../ui/ActionButton";
+import type { ImportConfig } from "../../types/forensics";
+import { ImportPickerButton } from "./ImportPickerButton";
+import { useFileDropImport } from "../../hooks/useFileDropImport";
 
-export function ImportDropzone() {
+interface ImportDropzoneProps {
+  config: ImportConfig | undefined;
+  error?: string;
+  isImporting: boolean;
+  onImport: (filePaths: string[]) => Promise<void>;
+}
+
+export function ImportDropzone({ config, error, isImporting, onImport }: ImportDropzoneProps) {
+  const { isDragActive } = useFileDropImport({ disabled: isImporting, onImport });
+  const supportedText = config?.supportedExtensions.map((extension) => extension.toUpperCase()).join(", ") ?? "Loading supported file types";
+
   return (
-    <section className="rounded-xl border border-dashed border-primary-soft/50 bg-panel/60 p-6 text-center">
+    <section
+      className={`rounded-xl border border-dashed p-6 text-center transition ${
+        isDragActive ? "border-cyan bg-cyan/10" : "border-primary-soft/50 bg-panel/60"
+      }`}
+    >
       <p className="technical text-xs uppercase tracking-[0.05em] text-cyan">Read-only import area</p>
-      <p className="mt-3 font-display text-lg font-semibold text-ink">Drop files for local metadata triage</p>
-      <p className="mt-2 text-sm leading-6 text-muted">Static shell only. File picker and drag-and-drop processing are intentionally disabled.</p>
+      <p className="mt-3 font-display text-lg font-semibold text-ink">{isDragActive ? "Release to import files" : "Drop files for local metadata triage"}</p>
+      <p className="mt-2 text-sm leading-6 text-muted">Files stay in place. piTrace records paths and file identity locally.</p>
+      <p className="mt-2 technical text-xs text-primary-soft">Supported: {supportedText}</p>
       <div className="mt-5">
-        <ActionButton disabled variant="technical">
-          Select files
-        </ActionButton>
+        <ImportPickerButton disabled={isImporting || !config} filters={config?.dialogFilters ?? []} onImport={onImport} />
       </div>
+      {isImporting ? <p className="mt-4 text-sm text-cyan">Importing files...</p> : null}
+      {error ? <p className="mt-4 text-sm text-danger">{error}</p> : null}
     </section>
   );
 }

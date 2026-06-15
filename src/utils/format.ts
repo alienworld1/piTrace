@@ -21,11 +21,3 @@ export function formatDateTime(value: string) {
     timeStyle: "short",
   }).format(new Date(value));
 }
-
-export function shortHash(value: string | undefined) {
-  if (!value) {
-    return "Pending";
-  }
-
-  return `${value.slice(0, 12)}...${value.slice(-10)}`;
-}

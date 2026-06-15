@@ -13,7 +13,6 @@ const toneClasses: Record<BadgeTone, string> = {
   medium: "border-amber/50 bg-amber/10 text-amber",
   low: "border-primary-soft/50 bg-primary-soft/10 text-muted",
   pending: "border-primary-soft/50 bg-primary-soft/10 text-muted",
-  hashing: "border-cyan/40 bg-cyan/10 text-cyan",
   analyzing: "border-cyan/40 bg-cyan/10 text-cyan",
   complete: "border-success/45 bg-success/10 text-success",
   error: "border-danger/50 bg-danger-strong/25 text-danger",
