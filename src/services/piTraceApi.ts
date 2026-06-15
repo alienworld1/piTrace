@@ -1,5 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { CaseInput, CaseRecord, CaseReport, EvidenceFile, Finding, ImportConfig, MetadataField } from "../types/forensics";
+import type {
+  CaseInput,
+  CaseRecord,
+  CaseReport,
+  EvidenceFile,
+  Finding,
+  ImportBatchResult,
+  ImportConfig,
+  MetadataField,
+} from "../types/forensics";
 
 export function listCases() {
   return invoke<CaseRecord[]>("list_cases");
@@ -11,6 +20,10 @@ export function createCase(input: CaseInput) {
 
 export function updateCase(caseId: string, input: CaseInput) {
   return invoke<CaseRecord>("update_case", { caseId, input });
+}
+
+export function deleteCase(caseId: string) {
+  return invoke<CaseRecord>("delete_case", { caseId });
 }
 
 export function getCase(caseId: string) {
@@ -25,8 +38,12 @@ export function getFile(fileId: string) {
   return invoke<EvidenceFile>("get_file", { fileId });
 }
 
+export function deleteFile(fileId: string) {
+  return invoke<EvidenceFile>("delete_file", { fileId });
+}
+
 export function importFiles(caseId: string, filePaths: string[]) {
-  return invoke<EvidenceFile[]>("import_files", { caseId, filePaths });
+  return invoke<ImportBatchResult>("import_files", { caseId, filePaths });
 }
 
 export function getImportConfig() {

@@ -1,4 +1,4 @@
-import { useParams } from "react-router";
+import { useNavigate, useParams } from "react-router";
 import { CaseSummary } from "../components/cases/CaseSummary";
 import { EvidenceList } from "../components/evidence/EvidenceList";
 import { ImportDropzone } from "../components/evidence/ImportDropzone";
@@ -7,10 +7,13 @@ import { ActionButton } from "../components/ui/ActionButton";
 import { EmptyState } from "../components/ui/EmptyState";
 import { MetricCard } from "../components/ui/MetricCard";
 import { useCaseWorkspace } from "../hooks/useCaseWorkspace";
+import { deleteCase, deleteFile } from "../services/piTraceApi";
+import type { EvidenceFile } from "../types/forensics";
 
 export function CaseWorkspacePage() {
   const { caseId } = useParams();
-  const { data, error, importError, importPaths, isImporting, isLoading } = useCaseWorkspace(caseId);
+  const navigate = useNavigate();
+  const { data, error, importError, importNotice, importPaths, isImporting, isLoading, reload } = useCaseWorkspace(caseId);
   const caseRecord = data?.caseRecord;
   const files = data?.files ?? [];
   const findings = data?.findings ?? [];
@@ -24,9 +27,39 @@ export function CaseWorkspacePage() {
     return <EmptyState description={error ?? "Case not found."} title="Could not load case" />;
   }
 
+  async function handleDeleteCase() {
+    if (!caseRecord || !window.confirm(`Remove "${caseRecord.name}" from piTrace? Original evidence files will stay on disk.`)) {
+      return;
+    }
+
+    await deleteCase(caseRecord.id);
+    navigate("/");
+  }
+
+  async function handleRemoveFile(file: EvidenceFile) {
+    if (!window.confirm(`Remove "${file.fileName}" from this case? The original file will stay on disk.`)) {
+      return;
+    }
+
+    await deleteFile(file.id);
+    await reload();
+  }
+
   return (
     <div className="space-y-6">
-      <CaseSummary caseRecord={caseRecord} />
+      <CaseSummary
+        action={
+          <>
+            <ActionButton to={`/cases/${caseRecord.id}/edit`} variant="technical">
+              Edit case
+            </ActionButton>
+            <ActionButton onClick={handleDeleteCase} variant="danger">
+              Delete case
+            </ActionButton>
+          </>
+        }
+        caseRecord={caseRecord}
+      />
       <div className="grid grid-cols-4 gap-4">
         <MetricCard detail="In this case" label="Files" value={String(files.length)} />
         <MetricCard detail="Awaiting analysis" label="Pending" value={String(pendingCount)} />
@@ -35,8 +68,8 @@ export function CaseWorkspacePage() {
       </div>
       <div className="grid grid-cols-[420px_1fr] gap-6">
         <div className="space-y-6">
-          <ImportDropzone config={data?.importConfig} error={importError} isImporting={isImporting} onImport={importPaths} />
-          <EvidenceList files={files} />
+          <ImportDropzone config={data?.importConfig} error={importError} isImporting={isImporting} notice={importNotice} onImport={importPaths} />
+          <EvidenceList files={files} onRemoveFile={handleRemoveFile} />
         </div>
         <div className="space-y-6">
           <section className="panel-edge rounded-xl p-5">

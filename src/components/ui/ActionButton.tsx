@@ -4,7 +4,7 @@ import { Link } from "react-router";
 interface ActionButtonProps {
   children: ReactNode;
   to?: string;
-  variant?: "primary" | "secondary" | "technical";
+  variant?: "primary" | "secondary" | "technical" | "danger";
   disabled?: boolean;
   onClick?: () => void | Promise<void>;
   type?: "button" | "submit";
@@ -14,6 +14,7 @@ const variantClasses = {
   primary: "border-cyan bg-cyan text-[#0e0e0f] hover:bg-primary",
   secondary: "border-line bg-transparent text-ink hover:border-primary-soft hover:bg-panel-high",
   technical: "border-line bg-panel-high text-muted technical text-xs uppercase tracking-[0.05em] hover:border-cyan hover:text-cyan",
+  danger: "border-danger/50 bg-danger-strong/10 text-danger hover:border-danger hover:bg-danger-strong/20",
 };
 
 export function ActionButton({ children, to, variant = "secondary", disabled = false, onClick, type = "button" }: ActionButtonProps) {

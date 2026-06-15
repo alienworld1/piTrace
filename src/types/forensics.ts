@@ -47,6 +47,17 @@ export interface EvidenceFile {
   errorMessage?: string;
 }
 
+export interface ImportRejection {
+  path: string;
+  fileName: string;
+  reason: string;
+}
+
+export interface ImportBatchResult {
+  importedFiles: EvidenceFile[];
+  rejectedFiles: ImportRejection[];
+}
+
 export interface MetadataField {
   id: string;
   fileId: string;

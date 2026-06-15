@@ -5,11 +5,12 @@ import { useFileDropImport } from "../../hooks/useFileDropImport";
 interface ImportDropzoneProps {
   config: ImportConfig | undefined;
   error?: string;
+  notice?: string;
   isImporting: boolean;
   onImport: (filePaths: string[]) => Promise<void>;
 }
 
-export function ImportDropzone({ config, error, isImporting, onImport }: ImportDropzoneProps) {
+export function ImportDropzone({ config, error, notice, isImporting, onImport }: ImportDropzoneProps) {
   const { isDragActive } = useFileDropImport({ disabled: isImporting, onImport });
   const supportedText = config?.supportedExtensions.map((extension) => extension.toUpperCase()).join(", ") ?? "Loading supported file types";
 
@@ -27,6 +28,7 @@ export function ImportDropzone({ config, error, isImporting, onImport }: ImportD
         <ImportPickerButton disabled={isImporting || !config} filters={config?.dialogFilters ?? []} onImport={onImport} />
       </div>
       {isImporting ? <p className="mt-4 text-sm text-cyan">Importing files...</p> : null}
+      {notice ? <p className="mt-4 text-sm text-cyan">{notice}</p> : null}
       {error ? <p className="mt-4 text-sm text-danger">{error}</p> : null}
     </section>
   );

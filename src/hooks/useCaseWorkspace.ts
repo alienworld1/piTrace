@@ -4,6 +4,7 @@ import { useAsyncData } from "./useAsyncData";
 
 export function useCaseWorkspace(caseId: string | undefined) {
   const [importError, setImportError] = useState<string>();
+  const [importNotice, setImportNotice] = useState<string>();
   const [isImporting, setIsImporting] = useState(false);
 
   const workspace = useAsyncData(async () => {
@@ -29,9 +30,21 @@ export function useCaseWorkspace(caseId: string | undefined) {
 
       setIsImporting(true);
       setImportError(undefined);
+      setImportNotice(undefined);
 
       try {
-        await importFiles(caseId, filePaths);
+        const result = await importFiles(caseId, filePaths);
+        const importedCount = result.importedFiles.length;
+        const rejectedCount = result.rejectedFiles.length;
+
+        if (importedCount > 0 && rejectedCount > 0) {
+          setImportNotice(`${importedCount} imported. ${rejectedCount} rejected.`);
+          setImportError(result.rejectedFiles.map((file) => `${file.fileName}: ${file.reason}`).join(" "));
+        } else if (importedCount > 0) {
+          setImportNotice(`${importedCount} imported.`);
+        } else if (rejectedCount > 0) {
+          setImportError(result.rejectedFiles.map((file) => `${file.fileName}: ${file.reason}`).join(" "));
+        }
       } catch (error) {
         setImportError(error instanceof Error ? error.message : String(error));
       } finally {
@@ -45,6 +58,7 @@ export function useCaseWorkspace(caseId: string | undefined) {
   return {
     ...workspace,
     importError,
+    importNotice,
     importPaths,
     isImporting,
   };

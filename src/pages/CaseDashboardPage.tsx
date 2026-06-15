@@ -3,11 +3,22 @@ import { EmptyState } from "../components/ui/EmptyState";
 import { MetricCard } from "../components/ui/MetricCard";
 import { PanelHeader } from "../components/ui/PanelHeader";
 import { useCaseDashboard } from "../hooks/useCaseDashboard";
+import { deleteCase } from "../services/piTraceApi";
+import type { CaseRecord } from "../types/forensics";
 
 export function CaseDashboardPage() {
-  const { data, error, isLoading } = useCaseDashboard();
+  const { data, error, isLoading, reload } = useCaseDashboard();
   const cases = data?.cases ?? [];
   const items = data?.items ?? [];
+
+  async function handleDeleteCase(caseRecord: CaseRecord) {
+    if (!window.confirm(`Remove "${caseRecord.name}" from piTrace? Original evidence files will stay on disk.`)) {
+      return;
+    }
+
+    await deleteCase(caseRecord.id);
+    await reload();
+  }
 
   return (
     <div className="space-y-6">
@@ -31,6 +42,7 @@ export function CaseDashboardPage() {
               findingCount={item.findingCount}
               highCount={item.highCount}
               key={item.caseRecord.id}
+              onDelete={handleDeleteCase}
             />
           ))}
         </div>
