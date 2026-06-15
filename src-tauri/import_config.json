@@ -1,0 +1,57 @@
+{
+  "supportedExtensions": [
+    "jpg",
+    "jpeg",
+    "png",
+    "tif",
+    "tiff",
+    "heic",
+    "pdf",
+    "docx",
+    "pptx",
+    "xlsx",
+    "mp3",
+    "wav",
+    "m4a",
+    "mp4",
+    "mov"
+  ],
+  "dialogFilters": [
+    {
+      "name": "Supported forensic files",
+      "extensions": [
+        "jpg",
+        "jpeg",
+        "png",
+        "tif",
+        "tiff",
+        "heic",
+        "pdf",
+        "docx",
+        "pptx",
+        "xlsx",
+        "mp3",
+        "wav",
+        "m4a",
+        "mp4",
+        "mov"
+      ]
+    },
+    {
+      "name": "Images",
+      "extensions": ["jpg", "jpeg", "png", "tif", "tiff", "heic"]
+    },
+    {
+      "name": "Documents",
+      "extensions": ["pdf", "docx", "pptx", "xlsx"]
+    },
+    {
+      "name": "Audio",
+      "extensions": ["mp3", "wav", "m4a"]
+    },
+    {
+      "name": "Video",
+      "extensions": ["mp4", "mov"]
+    }
+  ]
+}
