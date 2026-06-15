@@ -24,24 +24,46 @@ pub fn import_files_with_repository(
     file_paths: Vec<String>,
 ) -> Result<Vec<EvidenceFile>, String> {
     let store = repository.load()?;
+    let config = load_import_config()?;
 
     if !store.cases.iter().any(|case| case.id == case_id) {
         return Err("Case not found".to_string());
     }
 
+    let mut rejected = Vec::new();
     let imported = file_paths
         .into_iter()
         .filter(|path| !path.trim().is_empty())
-        .map(|path| {
+        .filter_map(|path| {
             let existing = store
                 .evidence_files
                 .iter()
                 .find(|file| file.case_id == case_id && file.original_path == path);
-            import_one(&case_id, &path, existing)
+            match import_one(&case_id, &path, existing, &config) {
+                Ok(file) => Some(file),
+                Err(message) => {
+                    rejected.push(format!("{}: {}", display_path_name(&path), message));
+                    None
+                }
+            }
         })
         .collect::<Vec<_>>();
 
-    repository.replace_imported_files(&case_id, imported)
+    let imported = if imported.is_empty() {
+        Vec::new()
+    } else {
+        repository.replace_imported_files(&case_id, imported)?
+    };
+
+    if rejected.is_empty() {
+        Ok(imported)
+    } else {
+        Err(format!(
+            "{} rejected. {}",
+            rejected.len(),
+            rejected.join(" ")
+        ))
+    }
 }
 
 pub fn load_import_config() -> Result<ImportConfig, String> {
@@ -68,7 +90,12 @@ pub fn load_import_config() -> Result<ImportConfig, String> {
     Ok(config)
 }
 
-fn import_one(case_id: &str, original_path: &str, existing: Option<&EvidenceFile>) -> EvidenceFile {
+fn import_one(
+    case_id: &str,
+    original_path: &str,
+    existing: Option<&EvidenceFile>,
+    config: &ImportConfig,
+) -> Result<EvidenceFile, String> {
     let path = PathBuf::from(original_path);
     let imported_at = now_iso();
     let fallback_name = path
@@ -82,7 +109,7 @@ fn import_one(case_id: &str, original_path: &str, existing: Option<&EvidenceFile
         .map(normalize_extension)
         .unwrap_or_default();
 
-    let base = EvidenceFile {
+    let mut file = EvidenceFile {
         id: existing
             .map(|file| file.id.clone())
             .unwrap_or_else(|| format!("file-{}", Uuid::new_v4())),
@@ -99,17 +126,15 @@ fn import_one(case_id: &str, original_path: &str, existing: Option<&EvidenceFile
         error_message: None,
     };
 
-    match build_import_record(base.clone(), &path) {
-        Ok(file) => file,
-        Err(message) => EvidenceFile {
-            error_message: Some(message),
-            ..base
-        },
-    }
+    build_import_record(&mut file, &path, config)?;
+    Ok(file)
 }
 
-fn build_import_record(mut file: EvidenceFile, path: &Path) -> Result<EvidenceFile, String> {
-    let config = load_import_config()?;
+fn build_import_record(
+    file: &mut EvidenceFile,
+    path: &Path,
+    config: &ImportConfig,
+) -> Result<(), String> {
     if file.extension.is_empty() || !config.supported_extensions.contains(&file.extension) {
         return Err(format!(
             "Unsupported file extension. Add '{}' to import_config.json to allow this file type.",
@@ -148,7 +173,15 @@ fn build_import_record(mut file: EvidenceFile, path: &Path) -> Result<EvidenceFi
     file.status = EvidenceStatus::Pending;
     file.error_message = None;
 
-    Ok(file)
+    Ok(())
+}
+
+fn display_path_name(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(path)
+        .to_string()
 }
 
 fn normalize_extension(extension: &str) -> String {
@@ -213,72 +246,94 @@ mod tests {
     }
 
     #[test]
-    fn import_unknown_extension_persists_error_record() {
+    fn import_unknown_extension_rejects_without_persisting_evidence() {
         let fixture = ImportFixture::new();
         let file_path = fixture.write_file("sample.xyznotallowed", b"data");
 
-        let imported = import_files_with_repository(
+        let error = import_files_with_repository(
             &fixture.repository,
             "case-1".to_string(),
             vec![file_path.to_string_lossy().to_string()],
         )
-        .expect("import command should persist per-file errors");
+        .expect_err("unsupported extension should reject import");
 
-        assert_eq!(imported[0].status, EvidenceStatus::Error);
-        assert_eq!(imported[0].extension, "xyznotallowed");
-        assert!(imported[0]
-            .error_message
-            .as_deref()
-            .unwrap_or_default()
-            .contains("Unsupported file extension"));
+        assert!(error.contains("1 rejected"));
+        assert!(error.contains("Unsupported file extension"));
 
         let persisted = fixture
             .repository
             .get_case_files("case-1")
-            .expect("error record should persist");
-        assert_eq!(persisted.len(), 1);
-        assert_eq!(persisted[0].status, EvidenceStatus::Error);
+            .expect("files should load");
+        assert!(persisted.is_empty());
     }
 
     #[test]
-    fn import_directory_persists_error_record() {
+    fn import_directory_rejects_without_persisting_evidence() {
         let fixture = ImportFixture::new();
         let directory = fixture.dir.join("directory.pdf");
         fs::create_dir_all(&directory).expect("directory should be created");
 
-        let imported = import_files_with_repository(
+        let error = import_files_with_repository(
             &fixture.repository,
             "case-1".to_string(),
             vec![directory.to_string_lossy().to_string()],
         )
-        .expect("import command should persist per-path errors");
+        .expect_err("directory should reject import");
 
-        assert_eq!(imported[0].status, EvidenceStatus::Error);
-        assert!(imported[0]
-            .error_message
-            .as_deref()
-            .unwrap_or_default()
-            .contains("Directories are not supported"));
+        assert!(error.contains("Directories are not supported"));
+        let persisted = fixture
+            .repository
+            .get_case_files("case-1")
+            .expect("files should load");
+        assert!(persisted.is_empty());
     }
 
     #[test]
-    fn import_missing_file_persists_error_record() {
+    fn import_missing_file_rejects_without_persisting_evidence() {
         let fixture = ImportFixture::new();
         let missing = fixture.dir.join("missing.pdf");
 
-        let imported = import_files_with_repository(
+        let error = import_files_with_repository(
             &fixture.repository,
             "case-1".to_string(),
             vec![missing.to_string_lossy().to_string()],
         )
-        .expect("import command should persist missing file error");
+        .expect_err("missing file should reject import");
 
-        assert_eq!(imported[0].status, EvidenceStatus::Error);
-        assert!(imported[0]
-            .error_message
-            .as_deref()
-            .unwrap_or_default()
-            .contains("File is unavailable"));
+        assert!(error.contains("File is unavailable"));
+        let persisted = fixture
+            .repository
+            .get_case_files("case-1")
+            .expect("files should load");
+        assert!(persisted.is_empty());
+    }
+
+    #[test]
+    fn mixed_import_persists_valid_files_and_reports_rejections() {
+        let fixture = ImportFixture::new();
+        let valid = fixture.write_file("valid.pdf", b"%PDF-1.7\n");
+        let invalid = fixture.write_file("invalid.xyznotallowed", b"data");
+
+        let error = import_files_with_repository(
+            &fixture.repository,
+            "case-1".to_string(),
+            vec![
+                valid.to_string_lossy().to_string(),
+                invalid.to_string_lossy().to_string(),
+            ],
+        )
+        .expect_err("mixed import should report rejected files");
+
+        assert!(error.contains("1 rejected"));
+        assert!(error.contains("invalid.xyznotallowed"));
+
+        let persisted = fixture
+            .repository
+            .get_case_files("case-1")
+            .expect("valid file should persist");
+        assert_eq!(persisted.len(), 1);
+        assert_eq!(persisted[0].file_name, "valid.pdf");
+        assert_eq!(persisted[0].status, EvidenceStatus::Pending);
     }
 
     #[test]

@@ -32,10 +32,10 @@ export function useCaseWorkspace(caseId: string | undefined) {
 
       try {
         await importFiles(caseId, filePaths);
-        await reload();
       } catch (error) {
         setImportError(error instanceof Error ? error.message : String(error));
       } finally {
+        await reload();
         setIsImporting(false);
       }
     },
