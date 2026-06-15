@@ -1,7 +1,8 @@
 use crate::{
     importer,
     models::{
-        CaseInput, CaseRecord, CaseReport, EvidenceFile, Finding, ImportConfig, MetadataField,
+        CaseInput, CaseRecord, CaseReport, EvidenceFile, Finding, ImportBatchResult, ImportConfig,
+        MetadataField,
     },
     storage::JsonRepository,
 };
@@ -32,6 +33,11 @@ pub fn update_case(
 }
 
 #[tauri::command]
+pub fn delete_case(app: AppHandle, case_id: String) -> Result<CaseRecord, String> {
+    JsonRepository::new(&app)?.delete_case(&case_id)
+}
+
+#[tauri::command]
 pub fn get_case(app: AppHandle, case_id: String) -> Result<CaseRecord, String> {
     JsonRepository::new(&app)?.get_case(&case_id)
 }
@@ -47,11 +53,16 @@ pub fn get_file(app: AppHandle, file_id: String) -> Result<EvidenceFile, String>
 }
 
 #[tauri::command]
+pub fn delete_file(app: AppHandle, file_id: String) -> Result<EvidenceFile, String> {
+    JsonRepository::new(&app)?.delete_file(&file_id)
+}
+
+#[tauri::command]
 pub fn import_files(
     app: AppHandle,
     case_id: String,
     file_paths: Vec<String>,
-) -> Result<Vec<EvidenceFile>, String> {
+) -> Result<ImportBatchResult, String> {
     importer::import_files(&app, case_id, file_paths)
 }
 

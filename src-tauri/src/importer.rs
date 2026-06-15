@@ -1,5 +1,5 @@
 use crate::{
-    models::{EvidenceFile, EvidenceStatus, ImportConfig},
+    models::{EvidenceFile, EvidenceStatus, ImportBatchResult, ImportConfig, ImportRejection},
     storage::{now_iso, JsonRepository},
 };
 use std::{
@@ -13,7 +13,7 @@ pub fn import_files(
     app: &AppHandle,
     case_id: String,
     file_paths: Vec<String>,
-) -> Result<Vec<EvidenceFile>, String> {
+) -> Result<ImportBatchResult, String> {
     let repository = JsonRepository::new(app)?;
     import_files_with_repository(&repository, case_id, file_paths)
 }
@@ -22,7 +22,7 @@ pub fn import_files_with_repository(
     repository: &JsonRepository,
     case_id: String,
     file_paths: Vec<String>,
-) -> Result<Vec<EvidenceFile>, String> {
+) -> Result<ImportBatchResult, String> {
     let store = repository.load()?;
     let config = load_import_config()?;
 
@@ -30,7 +30,7 @@ pub fn import_files_with_repository(
         return Err("Case not found".to_string());
     }
 
-    let mut rejected = Vec::new();
+    let mut rejected_files = Vec::new();
     let imported = file_paths
         .into_iter()
         .filter(|path| !path.trim().is_empty())
@@ -41,8 +41,12 @@ pub fn import_files_with_repository(
                 .find(|file| file.case_id == case_id && file.original_path == path);
             match import_one(&case_id, &path, existing, &config) {
                 Ok(file) => Some(file),
-                Err(message) => {
-                    rejected.push(format!("{}: {}", display_path_name(&path), message));
+                Err(reason) => {
+                    rejected_files.push(ImportRejection {
+                        file_name: display_path_name(&path),
+                        path,
+                        reason,
+                    });
                     None
                 }
             }
@@ -55,15 +59,10 @@ pub fn import_files_with_repository(
         repository.replace_imported_files(&case_id, imported)?
     };
 
-    if rejected.is_empty() {
-        Ok(imported)
-    } else {
-        Err(format!(
-            "{} rejected. {}",
-            rejected.len(),
-            rejected.join(" ")
-        ))
-    }
+    Ok(ImportBatchResult {
+        imported_files: imported,
+        rejected_files,
+    })
 }
 
 pub fn load_import_config() -> Result<ImportConfig, String> {
@@ -223,14 +222,16 @@ mod tests {
         let fixture = ImportFixture::new();
         let file_path = fixture.write_file("sample.pdf", b"%PDF-1.7\n");
 
-        let imported = import_files_with_repository(
+        let result = import_files_with_repository(
             &fixture.repository,
             "case-1".to_string(),
             vec![file_path.to_string_lossy().to_string()],
         )
         .expect("import should succeed");
 
-        assert_eq!(imported.len(), 1);
+        assert_eq!(result.imported_files.len(), 1);
+        assert!(result.rejected_files.is_empty());
+        let imported = result.imported_files;
         assert_eq!(imported[0].status, EvidenceStatus::Pending);
         assert_eq!(imported[0].file_name, "sample.pdf");
         assert_eq!(imported[0].extension, "pdf");
@@ -250,15 +251,19 @@ mod tests {
         let fixture = ImportFixture::new();
         let file_path = fixture.write_file("sample.xyznotallowed", b"data");
 
-        let error = import_files_with_repository(
+        let result = import_files_with_repository(
             &fixture.repository,
             "case-1".to_string(),
             vec![file_path.to_string_lossy().to_string()],
         )
-        .expect_err("unsupported extension should reject import");
+        .expect("unsupported extension should be reported as rejection");
 
-        assert!(error.contains("1 rejected"));
-        assert!(error.contains("Unsupported file extension"));
+        assert!(result.imported_files.is_empty());
+        assert_eq!(result.rejected_files.len(), 1);
+        assert_eq!(result.rejected_files[0].file_name, "sample.xyznotallowed");
+        assert!(result.rejected_files[0]
+            .reason
+            .contains("Unsupported file extension"));
 
         let persisted = fixture
             .repository
@@ -273,14 +278,18 @@ mod tests {
         let directory = fixture.dir.join("directory.pdf");
         fs::create_dir_all(&directory).expect("directory should be created");
 
-        let error = import_files_with_repository(
+        let result = import_files_with_repository(
             &fixture.repository,
             "case-1".to_string(),
             vec![directory.to_string_lossy().to_string()],
         )
-        .expect_err("directory should reject import");
+        .expect("directory should be reported as rejection");
 
-        assert!(error.contains("Directories are not supported"));
+        assert!(result.imported_files.is_empty());
+        assert_eq!(result.rejected_files.len(), 1);
+        assert!(result.rejected_files[0]
+            .reason
+            .contains("Directories are not supported"));
         let persisted = fixture
             .repository
             .get_case_files("case-1")
@@ -293,14 +302,18 @@ mod tests {
         let fixture = ImportFixture::new();
         let missing = fixture.dir.join("missing.pdf");
 
-        let error = import_files_with_repository(
+        let result = import_files_with_repository(
             &fixture.repository,
             "case-1".to_string(),
             vec![missing.to_string_lossy().to_string()],
         )
-        .expect_err("missing file should reject import");
+        .expect("missing file should be reported as rejection");
 
-        assert!(error.contains("File is unavailable"));
+        assert!(result.imported_files.is_empty());
+        assert_eq!(result.rejected_files.len(), 1);
+        assert!(result.rejected_files[0]
+            .reason
+            .contains("File is unavailable"));
         let persisted = fixture
             .repository
             .get_case_files("case-1")
@@ -314,7 +327,7 @@ mod tests {
         let valid = fixture.write_file("valid.pdf", b"%PDF-1.7\n");
         let invalid = fixture.write_file("invalid.xyznotallowed", b"data");
 
-        let error = import_files_with_repository(
+        let result = import_files_with_repository(
             &fixture.repository,
             "case-1".to_string(),
             vec![
@@ -322,10 +335,11 @@ mod tests {
                 invalid.to_string_lossy().to_string(),
             ],
         )
-        .expect_err("mixed import should report rejected files");
+        .expect("mixed import should report structured rejections");
 
-        assert!(error.contains("1 rejected"));
-        assert!(error.contains("invalid.xyznotallowed"));
+        assert_eq!(result.imported_files.len(), 1);
+        assert_eq!(result.rejected_files.len(), 1);
+        assert_eq!(result.rejected_files[0].file_name, "invalid.xyznotallowed");
 
         let persisted = fixture
             .repository
@@ -347,12 +361,14 @@ mod tests {
             "case-1".to_string(),
             vec![path.clone()],
         )
-        .expect("first import should succeed");
+        .expect("first import should succeed")
+        .imported_files;
         fs::write(&file_path, b"larger content").expect("file should be rewritten");
 
         let second =
             import_files_with_repository(&fixture.repository, "case-1".to_string(), vec![path])
-                .expect("second import should succeed");
+                .expect("second import should succeed")
+                .imported_files;
 
         assert_eq!(first[0].id, second[0].id);
         assert_eq!(second[0].size_bytes, 14);

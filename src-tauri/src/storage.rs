@@ -112,6 +112,65 @@ impl JsonRepository {
             .ok_or_else(|| "Evidence file not found".to_string())
     }
 
+    pub fn delete_case(&self, case_id: &str) -> Result<CaseRecord, String> {
+        let mut store = self.load()?;
+        let case_index = store
+            .cases
+            .iter()
+            .position(|case| case.id == case_id)
+            .ok_or_else(|| "Case not found".to_string())?;
+        let deleted = store.cases.remove(case_index);
+        let file_ids = store
+            .evidence_files
+            .iter()
+            .filter(|file| file.case_id == case_id)
+            .map(|file| file.id.clone())
+            .collect::<Vec<_>>();
+
+        store.evidence_files.retain(|file| file.case_id != case_id);
+        store
+            .metadata_fields
+            .retain(|field| !file_ids.contains(&field.file_id));
+        store
+            .findings
+            .retain(|finding| !file_ids.contains(&finding.file_id));
+        store.reports.retain(|report| report.case_id != case_id);
+
+        self.save(&store)?;
+        Ok(deleted)
+    }
+
+    pub fn delete_file(&self, file_id: &str) -> Result<EvidenceFile, String> {
+        let mut store = self.load()?;
+        let file_index = store
+            .evidence_files
+            .iter()
+            .position(|file| file.id == file_id)
+            .ok_or_else(|| "Evidence file not found".to_string())?;
+        let deleted = store.evidence_files.remove(file_index);
+
+        store
+            .metadata_fields
+            .retain(|field| field.file_id != deleted.id);
+        store
+            .findings
+            .retain(|finding| finding.file_id != deleted.id);
+        store
+            .reports
+            .retain(|report| report.case_id != deleted.case_id);
+
+        if let Some(case) = store
+            .cases
+            .iter_mut()
+            .find(|case| case.id == deleted.case_id)
+        {
+            case.updated_at = now_iso();
+        }
+
+        self.save(&store)?;
+        Ok(deleted)
+    }
+
     pub fn replace_imported_files(
         &self,
         case_id: &str,
@@ -145,7 +204,9 @@ impl JsonRepository {
 #[cfg(test)]
 mod tests {
     use super::JsonRepository;
-    use crate::models::{AppStore, CaseInput, EvidenceFile, EvidenceStatus};
+    use crate::models::{
+        AppStore, CaseInput, CaseReport, EvidenceFile, EvidenceStatus, Finding, MetadataField,
+    };
     use std::{
         fs,
         path::{Path, PathBuf},
@@ -319,6 +380,109 @@ mod tests {
         assert_eq!(error, "Case not found");
     }
 
+    #[test]
+    fn delete_case_removes_case_and_associated_records_only() {
+        let fixture = StoreFixture::new();
+        let mut store = AppStore::default();
+        store.cases = vec![
+            case_record("case-1", "Delete me"),
+            case_record("case-2", "Keep me"),
+        ];
+        store.evidence_files = vec![
+            evidence_file("file-1", "case-1", "/tmp/a.pdf", 10),
+            evidence_file("file-2", "case-2", "/tmp/b.pdf", 20),
+        ];
+        store.metadata_fields = vec![
+            metadata_field("field-1", "file-1"),
+            metadata_field("field-2", "file-2"),
+        ];
+        store.findings = vec![
+            finding("finding-1", "file-1"),
+            finding("finding-2", "file-2"),
+        ];
+        store.reports = vec![report("report-1", "case-1"), report("report-2", "case-2")];
+        fixture
+            .repository
+            .save(&store)
+            .expect("fixture store should save");
+
+        let deleted = fixture
+            .repository
+            .delete_case("case-1")
+            .expect("case should delete");
+
+        assert_eq!(deleted.id, "case-1");
+        let remaining = fixture.repository.load().expect("store should load");
+        assert_eq!(remaining.cases.len(), 1);
+        assert_eq!(remaining.cases[0].id, "case-2");
+        assert_eq!(remaining.evidence_files.len(), 1);
+        assert_eq!(remaining.evidence_files[0].id, "file-2");
+        assert_eq!(remaining.metadata_fields.len(), 1);
+        assert_eq!(remaining.metadata_fields[0].id, "field-2");
+        assert_eq!(remaining.findings.len(), 1);
+        assert_eq!(remaining.findings[0].id, "finding-2");
+        assert_eq!(remaining.reports.len(), 1);
+        assert_eq!(remaining.reports[0].id, "report-2");
+    }
+
+    #[test]
+    fn delete_file_removes_associated_records_and_invalidates_case_report() {
+        let fixture = StoreFixture::new();
+        let mut store = AppStore::default();
+        store.cases.push(case_record("case-1", "Case"));
+        store.evidence_files = vec![
+            evidence_file("file-1", "case-1", "/tmp/a.pdf", 10),
+            evidence_file("file-2", "case-1", "/tmp/b.pdf", 20),
+        ];
+        store.metadata_fields = vec![
+            metadata_field("field-1", "file-1"),
+            metadata_field("field-2", "file-2"),
+        ];
+        store.findings = vec![
+            finding("finding-1", "file-1"),
+            finding("finding-2", "file-2"),
+        ];
+        store.reports.push(report("report-1", "case-1"));
+        fixture
+            .repository
+            .save(&store)
+            .expect("fixture store should save");
+
+        let deleted = fixture
+            .repository
+            .delete_file("file-1")
+            .expect("file should delete");
+
+        assert_eq!(deleted.id, "file-1");
+        let remaining = fixture.repository.load().expect("store should load");
+        assert_eq!(remaining.cases.len(), 1);
+        assert_eq!(remaining.evidence_files.len(), 1);
+        assert_eq!(remaining.evidence_files[0].id, "file-2");
+        assert_eq!(remaining.metadata_fields.len(), 1);
+        assert_eq!(remaining.metadata_fields[0].id, "field-2");
+        assert_eq!(remaining.findings.len(), 1);
+        assert_eq!(remaining.findings[0].id, "finding-2");
+        assert!(remaining.reports.is_empty());
+        assert_ne!(remaining.cases[0].updated_at, "2026-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn delete_missing_case_and_file_return_not_found_errors() {
+        let fixture = StoreFixture::new();
+
+        let case_error = fixture
+            .repository
+            .delete_case("case-missing")
+            .expect_err("missing case should fail");
+        let file_error = fixture
+            .repository
+            .delete_file("file-missing")
+            .expect_err("missing file should fail");
+
+        assert_eq!(case_error, "Case not found");
+        assert_eq!(file_error, "Evidence file not found");
+    }
+
     struct StoreFixture {
         _dir: PathBuf,
         repository: JsonRepository,
@@ -372,6 +536,43 @@ mod tests {
             analyzed_at: None,
             status: EvidenceStatus::Pending,
             error_message: None,
+        }
+    }
+
+    fn metadata_field(id: &str, file_id: &str) -> MetadataField {
+        MetadataField {
+            id: id.to_string(),
+            file_id: file_id.to_string(),
+            group: "File".to_string(),
+            key: "Name".to_string(),
+            value: "value".to_string(),
+            source: "internal".to_string(),
+            normalized_category: None,
+        }
+    }
+
+    fn finding(id: &str, file_id: &str) -> Finding {
+        Finding {
+            id: id.to_string(),
+            file_id: file_id.to_string(),
+            category: "identity".to_string(),
+            title: "Finding".to_string(),
+            description: "Description".to_string(),
+            severity: "low".to_string(),
+            confidence: "medium".to_string(),
+            related_field_ids: Vec::new(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+        }
+    }
+
+    fn report(id: &str, case_id: &str) -> CaseReport {
+        CaseReport {
+            id: id.to_string(),
+            case_id: case_id.to_string(),
+            generated_at: "2026-01-01T00:00:00Z".to_string(),
+            format: "html".to_string(),
+            include_raw_metadata: true,
+            output_path: None,
         }
     }
 }

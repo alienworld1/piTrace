@@ -10,6 +10,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             commands::create_case,
+            commands::delete_case,
+            commands::delete_file,
             commands::get_case,
             commands::get_case_files,
             commands::get_case_findings,

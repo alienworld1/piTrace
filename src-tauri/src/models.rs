@@ -38,6 +38,21 @@ pub struct EvidenceFile {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ImportRejection {
+    pub path: String,
+    pub file_name: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportBatchResult {
+    pub imported_files: Vec<EvidenceFile>,
+    pub rejected_files: Vec<ImportRejection>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MetadataField {
     pub id: String,
     pub file_id: String,
