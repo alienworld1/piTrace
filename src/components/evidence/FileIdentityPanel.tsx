@@ -13,7 +13,7 @@ export function FileIdentityPanel({ file, action }: FileIdentityPanelProps) {
     <section className="panel-edge rounded-xl p-5">
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
-          <p className="text-xs font-semibold uppercase tracking-[0.05em] text-primary-soft">File identity</p>
+          <p className="text-xs font-semibold uppercase tracking-wider text-primary-soft">File identity</p>
           <h2 className="mt-2 font-display text-3xl font-semibold text-ink">{file.fileName}</h2>
           <p className="mt-2 technical text-xs text-muted">{file.originalPath}</p>
         </div>
@@ -40,6 +40,10 @@ export function FileIdentityPanel({ file, action }: FileIdentityPanelProps) {
           <dd className="mt-1 text-ink">{formatDateTime(file.importedAt)}</dd>
         </div>
       </dl>
+      <div className="mt-5 rounded-lg border border-line bg-base px-4 py-3">
+        <p className="text-xs font-semibold uppercase tracking-wider text-muted">SHA-256</p>
+        <p className="mt-2 break-all technical text-xs text-ink">{file.sha256 ?? "Unavailable for legacy import"}</p>
+      </div>
       {file.errorMessage ? (
         <div className="mt-4 rounded-lg border border-danger/40 bg-danger-strong/20 p-4 text-sm text-danger">{file.errorMessage}</div>
       ) : null}
