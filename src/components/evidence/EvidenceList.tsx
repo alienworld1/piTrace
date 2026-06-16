@@ -26,7 +26,7 @@ export function EvidenceList({ files, onRemoveFile }: EvidenceListProps) {
                 <p className="truncate text-sm font-semibold text-ink">{file.fileName}</p>
                 <p className="mt-1 truncate text-xs text-muted">{parentPath(file.originalPath)}</p>
                 <p className="mt-1 text-xs text-muted">
-                  {(file.detectedFileType ?? file.extension.toUpperCase())} · {formatBytes(file.sizeBytes)}
+                  {(file.detectedFileType ?? "Unrecognized")} · {formatBytes(file.sizeBytes)}
                 </p>
               </Link>
               <div className="flex shrink-0 items-center gap-2">

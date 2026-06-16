@@ -532,6 +532,7 @@ mod tests {
             detected_mime_type: None,
             detected_file_type: Some("PDF".to_string()),
             size_bytes,
+            sha256: Some("fixture-sha256".to_string()),
             imported_at: "2026-01-01T00:00:00Z".to_string(),
             analyzed_at: None,
             status: EvidenceStatus::Pending,

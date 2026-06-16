@@ -30,6 +30,7 @@ pub struct EvidenceFile {
     pub detected_mime_type: Option<String>,
     pub detected_file_type: Option<String>,
     pub size_bytes: u64,
+    pub sha256: Option<String>,
     pub imported_at: String,
     pub analyzed_at: Option<String>,
     pub status: EvidenceStatus,

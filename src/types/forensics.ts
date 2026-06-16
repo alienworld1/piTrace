@@ -41,6 +41,7 @@ export interface EvidenceFile {
   detectedMimeType?: string;
   detectedFileType?: string;
   sizeBytes: number;
+  sha256?: string;
   importedAt: string;
   analyzedAt?: string;
   status: EvidenceStatus;
