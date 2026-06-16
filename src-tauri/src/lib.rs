@@ -1,4 +1,5 @@
 mod commands;
+mod hashing;
 mod importer;
 mod models;
 mod storage;

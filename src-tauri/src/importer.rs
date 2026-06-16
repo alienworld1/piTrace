@@ -1,4 +1,5 @@
 use crate::{
+    hashing::compute_sha256,
     models::{EvidenceFile, EvidenceStatus, ImportBatchResult, ImportConfig, ImportRejection},
     storage::{now_iso, JsonRepository},
 };
@@ -119,6 +120,7 @@ fn import_one(
         detected_mime_type: None,
         detected_file_type: None,
         size_bytes: 0,
+        sha256: None,
         imported_at,
         analyzed_at: None,
         status: EvidenceStatus::Error,
@@ -169,6 +171,7 @@ fn build_import_record(
         };
     }
 
+    file.sha256 = Some(compute_sha256(path)?);
     file.status = EvidenceStatus::Pending;
     file.error_message = None;
 
@@ -218,9 +221,10 @@ mod tests {
     }
 
     #[test]
-    fn import_supported_file_records_pending_evidence_without_hashing() {
+    fn import_supported_file_records_pending_evidence_with_sha256() {
         let fixture = ImportFixture::new();
         let file_path = fixture.write_file("sample.pdf", b"%PDF-1.7\n");
+        let expected_hash = "0716f9264c9fe19f5d7455276107f3ddcc1d3497f63d60689a73558ae8a1bf5e";
 
         let result = import_files_with_repository(
             &fixture.repository,
@@ -236,6 +240,7 @@ mod tests {
         assert_eq!(imported[0].file_name, "sample.pdf");
         assert_eq!(imported[0].extension, "pdf");
         assert_eq!(imported[0].size_bytes, 9);
+        assert_eq!(imported[0].sha256.as_deref(), Some(expected_hash));
         assert_eq!(imported[0].error_message, None);
 
         let persisted = fixture
@@ -244,6 +249,7 @@ mod tests {
             .expect("files should persist");
         assert_eq!(persisted.len(), 1);
         assert_eq!(persisted[0].original_path, file_path.to_string_lossy());
+        assert_eq!(persisted[0].sha256.as_deref(), Some(expected_hash));
     }
 
     #[test]
@@ -372,6 +378,14 @@ mod tests {
 
         assert_eq!(first[0].id, second[0].id);
         assert_eq!(second[0].size_bytes, 14);
+        assert_eq!(
+            first[0].sha256.as_deref(),
+            Some("7692c3ad3540bb803c020b3aee66cd8887123234ea0c6e7143c0add73ff431ed")
+        );
+        assert_eq!(
+            second[0].sha256.as_deref(),
+            Some("5a728fd5846abf87ef9c9246a2dd48f2769b5fb73dff4384a5f80db258576476")
+        );
 
         let persisted = fixture
             .repository
@@ -379,6 +393,7 @@ mod tests {
             .expect("files should load");
         assert_eq!(persisted.len(), 1);
         assert_eq!(persisted[0].size_bytes, 14);
+        assert_eq!(persisted[0].sha256, second[0].sha256);
     }
 
     #[test]
