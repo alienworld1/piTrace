@@ -163,12 +163,6 @@ fn build_import_record(
     if let Some(identity) = identity {
         file.detected_mime_type = Some(identity.mime_type().to_string());
         file.detected_file_type = Some(identity.extension().to_uppercase());
-    } else {
-        file.detected_file_type = if file.extension.is_empty() {
-            None
-        } else {
-            Some(file.extension.to_uppercase())
-        };
     }
 
     file.sha256 = Some(compute_sha256(path)?);
@@ -250,6 +244,24 @@ mod tests {
         assert_eq!(persisted.len(), 1);
         assert_eq!(persisted[0].original_path, file_path.to_string_lossy());
         assert_eq!(persisted[0].sha256.as_deref(), Some(expected_hash));
+    }
+
+    #[test]
+    fn import_supported_file_with_unknown_content_does_not_claim_detected_type() {
+        let fixture = ImportFixture::new();
+        let file_path = fixture.write_file("sample.pdf", b"not actually a pdf");
+
+        let imported = import_files_with_repository(
+            &fixture.repository,
+            "case-1".to_string(),
+            vec![file_path.to_string_lossy().to_string()],
+        )
+        .expect("supported extension should import")
+        .imported_files;
+
+        assert_eq!(imported[0].extension, "pdf");
+        assert_eq!(imported[0].detected_mime_type, None);
+        assert_eq!(imported[0].detected_file_type, None);
     }
 
     #[test]

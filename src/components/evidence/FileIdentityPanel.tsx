@@ -9,6 +9,8 @@ interface FileIdentityPanelProps {
 }
 
 export function FileIdentityPanel({ file, action }: FileIdentityPanelProps) {
+  const extensionMismatch = getExtensionMismatch(file);
+
   return (
     <section className="panel-edge rounded-xl p-5">
       <div className="flex items-start justify-between gap-4">
@@ -22,14 +24,18 @@ export function FileIdentityPanel({ file, action }: FileIdentityPanelProps) {
           {action}
         </div>
       </div>
-      <dl className="mt-6 grid grid-cols-4 gap-4 text-sm">
+      <dl className="mt-6 grid gap-4 text-sm sm:grid-cols-2 xl:grid-cols-5">
+        <div>
+          <dt className="text-muted">Extension</dt>
+          <dd className="mt-1 text-ink">{file.extension ? `.${file.extension}` : "None"}</dd>
+        </div>
         <div>
           <dt className="text-muted">Type</dt>
-          <dd className="mt-1 text-ink">{file.detectedFileType ?? "Pending"}</dd>
+          <dd className="mt-1 text-ink">{file.detectedFileType ?? "Unrecognized"}</dd>
         </div>
         <div>
           <dt className="text-muted">MIME</dt>
-          <dd className="mt-1 text-ink">{file.detectedMimeType ?? "Pending"}</dd>
+          <dd className="mt-1 text-ink">{file.detectedMimeType ?? "Unrecognized"}</dd>
         </div>
         <div>
           <dt className="text-muted">Size</dt>
@@ -40,6 +46,19 @@ export function FileIdentityPanel({ file, action }: FileIdentityPanelProps) {
           <dd className="mt-1 text-ink">{formatDateTime(file.importedAt)}</dd>
         </div>
       </dl>
+      {extensionMismatch ? (
+        <div className="mt-4 rounded-lg border border-danger/40 bg-danger-strong/20 p-4 text-sm text-danger">
+          Extension mismatch: this file is named <span className="technical">.{extensionMismatch.extension}</span> but its
+          content was detected as <span className="technical">{extensionMismatch.detectedType}</span>
+          {file.detectedMimeType ? (
+            <>
+              {" "}
+              (<span className="technical">{file.detectedMimeType}</span>)
+            </>
+          ) : null}
+          .
+        </div>
+      ) : null}
       <div className="mt-5 rounded-lg border border-line bg-base px-4 py-3">
         <p className="text-xs font-semibold uppercase tracking-wider text-muted">SHA-256</p>
         <p className="mt-2 break-all technical text-xs text-ink">{file.sha256 ?? "Unavailable for legacy import"}</p>
@@ -49,4 +68,32 @@ export function FileIdentityPanel({ file, action }: FileIdentityPanelProps) {
       ) : null}
     </section>
   );
+}
+
+function getExtensionMismatch(file: EvidenceFile) {
+  if (!file.extension || !file.detectedFileType) {
+    return null;
+  }
+
+  const extension = file.extension.toLowerCase();
+  const detectedType = file.detectedFileType.toLowerCase();
+  if (equivalentExtensions(extension).has(detectedType)) {
+    return null;
+  }
+
+  return {
+    extension,
+    detectedType: file.detectedFileType.toUpperCase(),
+  };
+}
+
+function equivalentExtensions(extension: string) {
+  const aliases: Record<string, string[]> = {
+    jpg: ["jpg", "jpeg"],
+    jpeg: ["jpg", "jpeg"],
+    tif: ["tif", "tiff"],
+    tiff: ["tif", "tiff"],
+  };
+
+  return new Set(aliases[extension] ?? [extension]);
 }
