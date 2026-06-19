@@ -8,6 +8,7 @@ import type {
   ImportBatchResult,
   ImportConfig,
   MetadataField,
+  RawMetadataRecord,
 } from "../types/forensics";
 
 export function listCases() {
@@ -60,6 +61,10 @@ export function getFileFindings(fileId: string) {
 
 export function getFileMetadata(fileId: string) {
   return invoke<MetadataField[]>("get_file_metadata", { fileId });
+}
+
+export function getFileRawMetadata(fileId: string) {
+  return invoke<RawMetadataRecord | null>("get_file_raw_metadata", { fileId });
 }
 
 export function getFinding(findingId: string) {

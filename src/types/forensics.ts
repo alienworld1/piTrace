@@ -69,6 +69,13 @@ export interface MetadataField {
   normalizedCategory?: MetadataCategory;
 }
 
+export interface RawMetadataRecord {
+  fileId: string;
+  source: "exiftool" | "tika" | "internal";
+  extractedAt: string;
+  data: unknown;
+}
+
 export interface Finding {
   id: string;
   fileId: string;
