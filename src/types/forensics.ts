@@ -64,6 +64,7 @@ export interface MetadataField {
   fileId: string;
   group: string;
   key: string;
+  displayLabel?: string;
   value: string;
   source: "exiftool" | "tika" | "internal";
   normalizedCategory?: MetadataCategory;

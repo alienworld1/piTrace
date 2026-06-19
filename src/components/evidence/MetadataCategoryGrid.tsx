@@ -5,8 +5,10 @@ interface MetadataCategoryGridProps {
   fields: MetadataField[];
 }
 
+type VisibleCategoryId = Extract<MetadataCategory, "identity" | "location" | "timeline" | "software" | "technical">;
+
 interface VisibleCategory {
-  id: Extract<MetadataCategory, "identity" | "location" | "timeline" | "software" | "technical">;
+  id: VisibleCategoryId;
   title: string;
   emptyText: string;
 }
@@ -39,10 +41,30 @@ const visibleCategories: VisibleCategory[] = [
   },
 ];
 
+const visibleCategoryIds = new Set<MetadataCategory>(visibleCategories.map((category) => category.id));
+
+function isVisibleCategory(category: MetadataCategory | undefined): category is VisibleCategoryId {
+  return Boolean(category && visibleCategoryIds.has(category));
+}
+
 export function MetadataCategoryGrid({ fields }: MetadataCategoryGridProps) {
-  const visibleFields = fields.filter((field) =>
-    visibleCategories.some((category) => category.id === field.normalizedCategory),
+  const fieldsByCategory = visibleCategories.reduce(
+    (buckets, category) => {
+      buckets[category.id] = [];
+      return buckets;
+    },
+    {} as Record<VisibleCategoryId, MetadataField[]>,
   );
+
+  let visibleFieldCount = 0;
+  for (const field of fields) {
+    if (!isVisibleCategory(field.normalizedCategory)) {
+      continue;
+    }
+
+    fieldsByCategory[field.normalizedCategory].push(field);
+    visibleFieldCount += 1;
+  }
 
   return (
     <section className="panel-edge rounded-xl p-5">
@@ -51,11 +73,11 @@ export function MetadataCategoryGrid({ fields }: MetadataCategoryGridProps) {
           <h2 className="font-display text-xl font-semibold text-ink">Grouped metadata</h2>
           <p className="mt-1 text-sm text-muted">Readable fields derived from ExifTool metadata.</p>
         </div>
-        <Badge tone={visibleFields.length > 0 ? "primary" : "neutral"}>{visibleFields.length} fields</Badge>
+        <Badge tone={visibleFieldCount > 0 ? "primary" : "neutral"}>{visibleFieldCount} fields</Badge>
       </div>
       <div className="mt-5 grid gap-4 xl:grid-cols-2">
         {visibleCategories.map((category) => {
-          const categoryFields = visibleFields.filter((field) => field.normalizedCategory === category.id);
+          const categoryFields = fieldsByCategory[category.id];
 
           return (
             <section className="rounded-lg border border-line bg-surface p-4" key={category.id}>
@@ -69,7 +91,7 @@ export function MetadataCategoryGrid({ fields }: MetadataCategoryGridProps) {
                 <dl className="mt-4 divide-y divide-line/80">
                   {categoryFields.map((field) => (
                     <div className="grid gap-2 py-3 sm:grid-cols-[170px_1fr]" key={field.id}>
-                      <dt className="text-sm font-medium text-muted">{field.key}</dt>
+                      <dt className="text-sm font-medium text-muted">{field.displayLabel ?? field.key}</dt>
                       <dd className="min-w-0 break-words text-sm text-ink">{field.value}</dd>
                     </div>
                   ))}

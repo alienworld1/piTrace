@@ -36,9 +36,16 @@ export function FindingDetail({ finding, relatedFields }: FindingDetailProps) {
         <p className="text-xs font-semibold uppercase tracking-[0.05em] text-primary-soft">Related fields</p>
         <div className="mt-4 space-y-3">
           {relatedFields.map((field) => (
-            <div className="grid grid-cols-[160px_1fr] gap-4 rounded-md bg-panel px-3 py-2 text-sm" key={field.id}>
-              <p className="technical text-xs text-cyan">{field.group}:{field.key}</p>
-              <p className="text-muted">{field.value}</p>
+            <div className="grid gap-3 rounded-md bg-panel px-3 py-2 text-sm sm:grid-cols-[180px_1fr]" key={field.id}>
+              <div className="min-w-0">
+                <p className="break-words technical text-xs text-cyan">
+                  {field.group}:{field.key}
+                </p>
+                {field.displayLabel && field.displayLabel !== field.key ? (
+                  <p className="mt-1 text-xs text-muted">{field.displayLabel}</p>
+                ) : null}
+              </div>
+              <p className="min-w-0 break-words text-muted">{field.value}</p>
             </div>
           ))}
         </div>

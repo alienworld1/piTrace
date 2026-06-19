@@ -57,8 +57,8 @@ export function FileAnalysisPage() {
         }
         file={file}
       />
-      <div className="grid grid-cols-[1fr_420px] gap-6">
-        <div className="space-y-6">
+      <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_420px]">
+        <div className="min-w-0 space-y-6">
           <MetadataCategoryGrid fields={fields} />
           <RawMetadataJsonPanel rawMetadata={rawMetadata} />
           <MetadataTable fields={fields} />
