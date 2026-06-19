@@ -2,6 +2,7 @@ mod commands;
 mod hashing;
 mod importer;
 mod metadata_extractor;
+mod metadata_normalizer;
 mod models;
 mod storage;
 

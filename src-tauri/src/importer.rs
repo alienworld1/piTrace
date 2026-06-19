@@ -1,9 +1,10 @@
 use crate::{
     hashing::compute_sha256,
     metadata_extractor::{ExifToolMetadataExtractor, RawMetadataExtractor},
+    metadata_normalizer::normalize_metadata,
     models::{
         EvidenceFile, EvidenceStatus, ImportBatchResult, ImportConfig, ImportRejection,
-        RawMetadataRecord,
+        MetadataField, RawMetadataRecord,
     },
     storage::{now_iso, JsonRepository},
 };
@@ -79,13 +80,18 @@ fn import_files_with_repository_and_extractor(
         .iter()
         .filter_map(|record| record.raw_metadata.clone())
         .collect::<Vec<_>>();
+    let metadata_fields = import_records
+        .iter()
+        .flat_map(|record| record.metadata_fields.clone())
+        .collect::<Vec<_>>();
     let imported = if imported_files.is_empty() {
         Vec::new()
     } else {
-        repository.replace_imported_files_with_raw_metadata(
+        repository.replace_imported_files_with_metadata(
             &case_id,
             imported_files,
             raw_metadata,
+            metadata_fields,
         )?
     };
 
@@ -158,8 +164,13 @@ fn import_one(
     };
 
     let analysis_snapshot = build_import_record(&mut file, &path, config)?;
-    let raw_metadata = analyze_imported_file(&mut file, &path, extractor, &analysis_snapshot);
-    Ok(ImportRecord { file, raw_metadata })
+    let (raw_metadata, metadata_fields) =
+        analyze_imported_file(&mut file, &path, extractor, &analysis_snapshot);
+    Ok(ImportRecord {
+        file,
+        raw_metadata,
+        metadata_fields,
+    })
 }
 
 fn build_import_record(
@@ -216,7 +227,7 @@ fn analyze_imported_file(
     path: &Path,
     extractor: &dyn RawMetadataExtractor,
     analysis_snapshot: &FileSnapshot,
-) -> Option<RawMetadataRecord> {
+) -> (Option<RawMetadataRecord>, Vec<MetadataField>) {
     file.status = EvidenceStatus::Analyzing;
 
     match extractor.extract_raw_metadata(path) {
@@ -231,14 +242,14 @@ fn analyze_imported_file(
                         "File changed during ExifTool analysis. Re-import the file when it is stable."
                             .to_string(),
                     );
-                    return None;
+                    return (None, Vec::new());
                 }
                 Err(error) => {
                     file.status = EvidenceStatus::Error;
                     file.analyzed_at = Some(now_iso());
                     file.sha256 = None;
                     file.error_message = Some(error);
-                    return None;
+                    return (None, Vec::new());
                 }
             }
 
@@ -246,19 +257,23 @@ fn analyze_imported_file(
             file.status = EvidenceStatus::Complete;
             file.analyzed_at = Some(extracted_at.clone());
             file.error_message = None;
+            let metadata_fields = normalize_metadata(&file.id, "exiftool", &data);
 
-            Some(RawMetadataRecord {
-                file_id: file.id.clone(),
-                source: "exiftool".to_string(),
-                extracted_at,
-                data,
-            })
+            (
+                Some(RawMetadataRecord {
+                    file_id: file.id.clone(),
+                    source: "exiftool".to_string(),
+                    extracted_at,
+                    data,
+                }),
+                metadata_fields,
+            )
         }
         Err(error) => {
             file.status = EvidenceStatus::Error;
             file.analyzed_at = Some(now_iso());
             file.error_message = Some(error);
-            None
+            (None, Vec::new())
         }
     }
 }
@@ -287,6 +302,7 @@ fn file_snapshot(path: &Path) -> Result<FileSnapshot, String> {
 struct ImportRecord {
     file: EvidenceFile,
     raw_metadata: Option<RawMetadataRecord>,
+    metadata_fields: Vec<MetadataField>,
 }
 
 fn display_path_name(path: &str) -> String {
@@ -379,6 +395,13 @@ mod tests {
             .expect("raw metadata should persist");
         assert_eq!(raw_metadata.source, "exiftool");
         assert_eq!(raw_metadata.data["File"]["FileType"], "PDF");
+        let store = fixture.repository.load().expect("store should load");
+        assert!(store.metadata_fields.iter().any(|field| {
+            field.file_id == imported[0].id
+                && field.key == "File type"
+                && field.value == "PDF"
+                && field.normalized_category.as_deref() == Some("technical")
+        }));
     }
 
     #[test]
@@ -568,6 +591,12 @@ mod tests {
             .get_file_raw_metadata(&imported[0].id)
             .expect("raw metadata lookup should succeed")
             .is_none());
+        assert!(fixture
+            .repository
+            .load()
+            .expect("store should load")
+            .metadata_fields
+            .is_empty());
     }
 
     #[test]
@@ -588,6 +617,13 @@ mod tests {
             .get_file_raw_metadata(&first[0].id)
             .expect("raw metadata lookup should succeed")
             .is_some());
+        assert!(fixture
+            .repository
+            .load()
+            .expect("store should load")
+            .metadata_fields
+            .iter()
+            .any(|field| field.file_id == first[0].id));
 
         let second = import_with_failure(&fixture.repository, "case-1".to_string(), vec![path])
             .expect("second import should keep file record")
@@ -600,6 +636,13 @@ mod tests {
             .get_file_raw_metadata(&second[0].id)
             .expect("raw metadata lookup should succeed")
             .is_none());
+        assert!(!fixture
+            .repository
+            .load()
+            .expect("store should load")
+            .metadata_fields
+            .iter()
+            .any(|field| field.file_id == second[0].id));
     }
 
     #[test]
@@ -632,6 +675,15 @@ mod tests {
         assert_eq!(imported[0].status, EvidenceStatus::Complete);
         assert_eq!(raw_metadata.data["File"]["FileType"], "JPEG");
         assert!(raw_metadata.data["GPS"].is_object());
+        let store = fixture.repository.load().expect("store should load");
+        assert!(store.metadata_fields.iter().any(|field| {
+            field.file_id == imported[0].id
+                && field.normalized_category.as_deref() == Some("location")
+        }));
+        assert!(store.metadata_fields.iter().any(|field| {
+            field.file_id == imported[0].id
+                && field.normalized_category.as_deref() == Some("technical")
+        }));
     }
 
     #[test]
@@ -663,6 +715,13 @@ mod tests {
             .get_file_raw_metadata(&imported[0].id)
             .expect("raw metadata lookup should succeed")
             .is_none());
+        assert!(!fixture
+            .repository
+            .load()
+            .expect("store should load")
+            .metadata_fields
+            .iter()
+            .any(|field| field.file_id == imported[0].id));
     }
 
     #[test]
