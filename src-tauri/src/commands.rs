@@ -2,7 +2,7 @@ use crate::{
     importer,
     models::{
         CaseInput, CaseRecord, CaseReport, EvidenceFile, Finding, ImportBatchResult, ImportConfig,
-        MetadataField,
+        MetadataField, RawMetadataRecord,
     },
     storage::JsonRepository,
 };
@@ -102,6 +102,14 @@ pub fn get_file_metadata(app: AppHandle, file_id: String) -> Result<Vec<Metadata
         .into_iter()
         .filter(|field| field.file_id == file_id)
         .collect())
+}
+
+#[tauri::command]
+pub fn get_file_raw_metadata(
+    app: AppHandle,
+    file_id: String,
+) -> Result<Option<RawMetadataRecord>, String> {
+    JsonRepository::new(&app)?.get_file_raw_metadata(&file_id)
 }
 
 #[tauri::command]

@@ -59,6 +59,7 @@ pub struct MetadataField {
     pub file_id: String,
     pub group: String,
     pub key: String,
+    pub display_label: Option<String>,
     pub value: String,
     pub source: String,
     pub normalized_category: Option<String>,
@@ -89,6 +90,15 @@ pub struct CaseReport {
     pub output_path: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RawMetadataRecord {
+    pub file_id: String,
+    pub source: String,
+    pub extracted_at: String,
+    pub data: serde_json::Value,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EvidenceStatus {
@@ -115,9 +125,16 @@ pub struct ImportConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppStore {
+    #[serde(default)]
     pub cases: Vec<CaseRecord>,
+    #[serde(default)]
     pub evidence_files: Vec<EvidenceFile>,
+    #[serde(default)]
     pub metadata_fields: Vec<MetadataField>,
+    #[serde(default)]
+    pub raw_metadata: Vec<RawMetadataRecord>,
+    #[serde(default)]
     pub findings: Vec<Finding>,
+    #[serde(default)]
     pub reports: Vec<CaseReport>,
 }

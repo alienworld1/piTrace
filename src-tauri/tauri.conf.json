@@ -23,7 +23,13 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["deb", "appimage", "dmg"],
+    "resources": {
+      "../.agent/exiftool/exiftool": "exiftool/exiftool",
+      "../.agent/exiftool/lib/": "exiftool/lib/",
+      "../.agent/exiftool/README": "exiftool/README",
+      "../.agent/exiftool/META.json": "exiftool/META.json"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
