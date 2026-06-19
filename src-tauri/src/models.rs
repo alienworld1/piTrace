@@ -59,6 +59,7 @@ pub struct MetadataField {
     pub file_id: String,
     pub group: String,
     pub key: String,
+    pub display_label: Option<String>,
     pub value: String,
     pub source: String,
     pub normalized_category: Option<String>,

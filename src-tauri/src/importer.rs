@@ -398,7 +398,8 @@ mod tests {
         let store = fixture.repository.load().expect("store should load");
         assert!(store.metadata_fields.iter().any(|field| {
             field.file_id == imported[0].id
-                && field.key == "File type"
+                && field.key == "FileType"
+                && field.display_label.as_deref() == Some("File type")
                 && field.value == "PDF"
                 && field.normalized_category.as_deref() == Some("technical")
         }));

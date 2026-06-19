@@ -511,6 +511,42 @@ mod tests {
         assert_eq!(loaded.metadata_fields.len(), 1);
         assert_eq!(loaded.raw_metadata[0].file_id, file.id);
         assert_eq!(loaded.metadata_fields[0].file_id, file.id);
+        assert_eq!(
+            loaded.metadata_fields[0].display_label.as_deref(),
+            Some("Display name")
+        );
+    }
+
+    #[test]
+    fn load_accepts_metadata_fields_without_display_label() {
+        let fixture = StoreFixture::new();
+        fs::write(
+            &fixture.repository.path,
+            serde_json::to_string_pretty(&json!({
+                "cases": [],
+                "evidenceFiles": [],
+                "metadataFields": [{
+                    "id": "field-1",
+                    "fileId": "file-1",
+                    "group": "File",
+                    "key": "FileType",
+                    "value": "PDF",
+                    "source": "exiftool",
+                    "normalizedCategory": "technical"
+                }],
+                "rawMetadata": [],
+                "findings": [],
+                "reports": []
+            }))
+            .expect("fixture JSON should serialize"),
+        )
+        .expect("fixture store should write");
+
+        let loaded = fixture.repository.load().expect("old store should load");
+
+        assert_eq!(loaded.metadata_fields.len(), 1);
+        assert_eq!(loaded.metadata_fields[0].key, "FileType");
+        assert_eq!(loaded.metadata_fields[0].display_label, None);
     }
 
     #[test]
@@ -823,6 +859,7 @@ mod tests {
             file_id: file_id.to_string(),
             group: "File".to_string(),
             key: "Name".to_string(),
+            display_label: Some("Display name".to_string()),
             value: "value".to_string(),
             source: "internal".to_string(),
             normalized_category: None,
