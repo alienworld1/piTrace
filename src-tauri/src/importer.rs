@@ -1,6 +1,10 @@
 use crate::{
     hashing::compute_sha256,
-    models::{EvidenceFile, EvidenceStatus, ImportBatchResult, ImportConfig, ImportRejection},
+    metadata_extractor::{ExifToolMetadataExtractor, RawMetadataExtractor},
+    models::{
+        EvidenceFile, EvidenceStatus, ImportBatchResult, ImportConfig, ImportRejection,
+        RawMetadataRecord,
+    },
     storage::{now_iso, JsonRepository},
 };
 use std::{
@@ -16,11 +20,23 @@ pub fn import_files(
     file_paths: Vec<String>,
 ) -> Result<ImportBatchResult, String> {
     let repository = JsonRepository::new(app)?;
-    import_files_with_repository(&repository, case_id, file_paths)
+    let extractor = ExifToolMetadataExtractor::for_app(app);
+    import_files_with_repository_and_extractor(&repository, &extractor, case_id, file_paths)
 }
 
+#[cfg(test)]
 pub fn import_files_with_repository(
     repository: &JsonRepository,
+    case_id: String,
+    file_paths: Vec<String>,
+) -> Result<ImportBatchResult, String> {
+    let extractor = ExifToolMetadataExtractor::for_tests();
+    import_files_with_repository_and_extractor(repository, &extractor, case_id, file_paths)
+}
+
+fn import_files_with_repository_and_extractor(
+    repository: &JsonRepository,
+    extractor: &dyn RawMetadataExtractor,
     case_id: String,
     file_paths: Vec<String>,
 ) -> Result<ImportBatchResult, String> {
@@ -32,7 +48,7 @@ pub fn import_files_with_repository(
     }
 
     let mut rejected_files = Vec::new();
-    let imported = file_paths
+    let import_records = file_paths
         .into_iter()
         .filter(|path| !path.trim().is_empty())
         .filter_map(|path| {
@@ -40,8 +56,8 @@ pub fn import_files_with_repository(
                 .evidence_files
                 .iter()
                 .find(|file| file.case_id == case_id && file.original_path == path);
-            match import_one(&case_id, &path, existing, &config) {
-                Ok(file) => Some(file),
+            match import_one(&case_id, &path, existing, &config, extractor) {
+                Ok(record) => Some(record),
                 Err(reason) => {
                     rejected_files.push(ImportRejection {
                         file_name: display_path_name(&path),
@@ -54,11 +70,23 @@ pub fn import_files_with_repository(
         })
         .collect::<Vec<_>>();
 
-    let imported = if imported.is_empty() {
+    let imported_files = import_records
+        .iter()
+        .map(|record| record.file.clone())
+        .collect::<Vec<_>>();
+    let imported = if imported_files.is_empty() {
         Vec::new()
     } else {
-        repository.replace_imported_files(&case_id, imported)?
+        repository.replace_imported_files(&case_id, imported_files)?
     };
+
+    for record in import_records {
+        if let Some(raw_metadata) = record.raw_metadata {
+            repository.replace_raw_metadata(raw_metadata)?;
+        } else {
+            repository.delete_raw_metadata(&record.file.id)?;
+        }
+    }
 
     Ok(ImportBatchResult {
         imported_files: imported,
@@ -95,7 +123,8 @@ fn import_one(
     original_path: &str,
     existing: Option<&EvidenceFile>,
     config: &ImportConfig,
-) -> Result<EvidenceFile, String> {
+    extractor: &dyn RawMetadataExtractor,
+) -> Result<ImportRecord, String> {
     let path = PathBuf::from(original_path);
     let imported_at = now_iso();
     let fallback_name = path
@@ -128,7 +157,8 @@ fn import_one(
     };
 
     build_import_record(&mut file, &path, config)?;
-    Ok(file)
+    let raw_metadata = analyze_imported_file(&mut file, &path, extractor);
+    Ok(ImportRecord { file, raw_metadata })
 }
 
 fn build_import_record(
@@ -172,6 +202,41 @@ fn build_import_record(
     Ok(())
 }
 
+fn analyze_imported_file(
+    file: &mut EvidenceFile,
+    path: &Path,
+    extractor: &dyn RawMetadataExtractor,
+) -> Option<RawMetadataRecord> {
+    file.status = EvidenceStatus::Analyzing;
+
+    match extractor.extract_raw_metadata(path) {
+        Ok(data) => {
+            let extracted_at = now_iso();
+            file.status = EvidenceStatus::Complete;
+            file.analyzed_at = Some(extracted_at.clone());
+            file.error_message = None;
+
+            Some(RawMetadataRecord {
+                file_id: file.id.clone(),
+                source: "exiftool".to_string(),
+                extracted_at,
+                data,
+            })
+        }
+        Err(error) => {
+            file.status = EvidenceStatus::Error;
+            file.analyzed_at = Some(now_iso());
+            file.error_message = Some(error);
+            None
+        }
+    }
+}
+
+struct ImportRecord {
+    file: EvidenceFile,
+    raw_metadata: Option<RawMetadataRecord>,
+}
+
 fn display_path_name(path: &str) -> String {
     Path::new(path)
         .file_name()
@@ -189,12 +254,20 @@ fn normalize_extension(extension: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{import_files_with_repository, load_import_config};
+    use super::{
+        import_files_with_repository, import_files_with_repository_and_extractor,
+        load_import_config,
+    };
     use crate::{
+        metadata_extractor::RawMetadataExtractor,
         models::{AppStore, CaseRecord, EvidenceStatus},
         storage::JsonRepository,
     };
-    use std::{fs, path::PathBuf};
+    use serde_json::{json, Value};
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+    };
     use uuid::Uuid;
 
     #[test]
@@ -215,12 +288,12 @@ mod tests {
     }
 
     #[test]
-    fn import_supported_file_records_pending_evidence_with_sha256() {
+    fn import_supported_file_records_complete_evidence_with_sha256_and_raw_metadata() {
         let fixture = ImportFixture::new();
         let file_path = fixture.write_file("sample.pdf", b"%PDF-1.7\n");
         let expected_hash = "0716f9264c9fe19f5d7455276107f3ddcc1d3497f63d60689a73558ae8a1bf5e";
 
-        let result = import_files_with_repository(
+        let result = import_with_success(
             &fixture.repository,
             "case-1".to_string(),
             vec![file_path.to_string_lossy().to_string()],
@@ -230,11 +303,12 @@ mod tests {
         assert_eq!(result.imported_files.len(), 1);
         assert!(result.rejected_files.is_empty());
         let imported = result.imported_files;
-        assert_eq!(imported[0].status, EvidenceStatus::Pending);
+        assert_eq!(imported[0].status, EvidenceStatus::Complete);
         assert_eq!(imported[0].file_name, "sample.pdf");
         assert_eq!(imported[0].extension, "pdf");
         assert_eq!(imported[0].size_bytes, 9);
         assert_eq!(imported[0].sha256.as_deref(), Some(expected_hash));
+        assert!(imported[0].analyzed_at.is_some());
         assert_eq!(imported[0].error_message, None);
 
         let persisted = fixture
@@ -244,6 +318,14 @@ mod tests {
         assert_eq!(persisted.len(), 1);
         assert_eq!(persisted[0].original_path, file_path.to_string_lossy());
         assert_eq!(persisted[0].sha256.as_deref(), Some(expected_hash));
+
+        let raw_metadata = fixture
+            .repository
+            .get_file_raw_metadata(&imported[0].id)
+            .expect("raw metadata should load")
+            .expect("raw metadata should persist");
+        assert_eq!(raw_metadata.source, "exiftool");
+        assert_eq!(raw_metadata.data["File"]["FileType"], "PDF");
     }
 
     #[test]
@@ -251,7 +333,7 @@ mod tests {
         let fixture = ImportFixture::new();
         let file_path = fixture.write_file("sample.pdf", b"not actually a pdf");
 
-        let imported = import_files_with_repository(
+        let imported = import_with_success(
             &fixture.repository,
             "case-1".to_string(),
             vec![file_path.to_string_lossy().to_string()],
@@ -269,7 +351,7 @@ mod tests {
         let fixture = ImportFixture::new();
         let file_path = fixture.write_file("sample.xyznotallowed", b"data");
 
-        let result = import_files_with_repository(
+        let result = import_with_success(
             &fixture.repository,
             "case-1".to_string(),
             vec![file_path.to_string_lossy().to_string()],
@@ -296,7 +378,7 @@ mod tests {
         let directory = fixture.dir.join("directory.pdf");
         fs::create_dir_all(&directory).expect("directory should be created");
 
-        let result = import_files_with_repository(
+        let result = import_with_success(
             &fixture.repository,
             "case-1".to_string(),
             vec![directory.to_string_lossy().to_string()],
@@ -320,7 +402,7 @@ mod tests {
         let fixture = ImportFixture::new();
         let missing = fixture.dir.join("missing.pdf");
 
-        let result = import_files_with_repository(
+        let result = import_with_success(
             &fixture.repository,
             "case-1".to_string(),
             vec![missing.to_string_lossy().to_string()],
@@ -345,7 +427,7 @@ mod tests {
         let valid = fixture.write_file("valid.pdf", b"%PDF-1.7\n");
         let invalid = fixture.write_file("invalid.xyznotallowed", b"data");
 
-        let result = import_files_with_repository(
+        let result = import_with_success(
             &fixture.repository,
             "case-1".to_string(),
             vec![
@@ -365,7 +447,7 @@ mod tests {
             .expect("valid file should persist");
         assert_eq!(persisted.len(), 1);
         assert_eq!(persisted[0].file_name, "valid.pdf");
-        assert_eq!(persisted[0].status, EvidenceStatus::Pending);
+        assert_eq!(persisted[0].status, EvidenceStatus::Complete);
     }
 
     #[test]
@@ -374,7 +456,7 @@ mod tests {
         let file_path = fixture.write_file("duplicate.pdf", b"one");
         let path = file_path.to_string_lossy().to_string();
 
-        let first = import_files_with_repository(
+        let first = import_with_success(
             &fixture.repository,
             "case-1".to_string(),
             vec![path.clone()],
@@ -383,10 +465,9 @@ mod tests {
         .imported_files;
         fs::write(&file_path, b"larger content").expect("file should be rewritten");
 
-        let second =
-            import_files_with_repository(&fixture.repository, "case-1".to_string(), vec![path])
-                .expect("second import should succeed")
-                .imported_files;
+        let second = import_with_success(&fixture.repository, "case-1".to_string(), vec![path])
+            .expect("second import should succeed")
+            .imported_files;
 
         assert_eq!(first[0].id, second[0].id);
         assert_eq!(second[0].size_bytes, 14);
@@ -406,6 +487,98 @@ mod tests {
         assert_eq!(persisted.len(), 1);
         assert_eq!(persisted[0].size_bytes, 14);
         assert_eq!(persisted[0].sha256, second[0].sha256);
+    }
+
+    #[test]
+    fn import_records_error_status_when_metadata_extraction_fails() {
+        let fixture = ImportFixture::new();
+        let file_path = fixture.write_file("sample.pdf", b"%PDF-1.7\n");
+
+        let imported = import_with_failure(
+            &fixture.repository,
+            "case-1".to_string(),
+            vec![file_path.to_string_lossy().to_string()],
+        )
+        .expect("import should keep file identity when analysis fails")
+        .imported_files;
+
+        assert_eq!(imported.len(), 1);
+        assert_eq!(imported[0].status, EvidenceStatus::Error);
+        assert_eq!(
+            imported[0].error_message.as_deref(),
+            Some("fixture extraction failed")
+        );
+        assert!(imported[0].sha256.is_some());
+        assert!(imported[0].analyzed_at.is_some());
+        assert!(fixture
+            .repository
+            .get_file_raw_metadata(&imported[0].id)
+            .expect("raw metadata lookup should succeed")
+            .is_none());
+    }
+
+    #[test]
+    fn import_failure_clears_previous_raw_metadata_for_same_file() {
+        let fixture = ImportFixture::new();
+        let file_path = fixture.write_file("sample.pdf", b"%PDF-1.7\n");
+        let path = file_path.to_string_lossy().to_string();
+
+        let first = import_with_success(
+            &fixture.repository,
+            "case-1".to_string(),
+            vec![path.clone()],
+        )
+        .expect("first import should succeed")
+        .imported_files;
+        assert!(fixture
+            .repository
+            .get_file_raw_metadata(&first[0].id)
+            .expect("raw metadata lookup should succeed")
+            .is_some());
+
+        let second = import_with_failure(&fixture.repository, "case-1".to_string(), vec![path])
+            .expect("second import should keep file record")
+            .imported_files;
+
+        assert_eq!(first[0].id, second[0].id);
+        assert_eq!(second[0].status, EvidenceStatus::Error);
+        assert!(fixture
+            .repository
+            .get_file_raw_metadata(&second[0].id)
+            .expect("raw metadata lookup should succeed")
+            .is_none());
+    }
+
+    #[test]
+    fn public_repository_import_uses_real_exiftool_extraction() {
+        let fixture = ImportFixture::new();
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join(".agent")
+            .join("exiftool")
+            .join("t")
+            .join("images")
+            .join("GPS.jpg");
+        let file_path = fixture.dir.join("GPS.jpg");
+        fs::copy(source, &file_path).expect("fixture image should copy");
+
+        let imported = import_files_with_repository(
+            &fixture.repository,
+            "case-1".to_string(),
+            vec![file_path.to_string_lossy().to_string()],
+        )
+        .expect("import should run real exiftool")
+        .imported_files;
+
+        let raw_metadata = fixture
+            .repository
+            .get_file_raw_metadata(&imported[0].id)
+            .expect("raw metadata should load")
+            .expect("raw metadata should exist");
+
+        assert_eq!(imported[0].status, EvidenceStatus::Complete);
+        assert_eq!(raw_metadata.data["File"]["FileType"], "JPEG");
+        assert!(raw_metadata.data["GPS"].is_object());
     }
 
     #[test]
@@ -457,6 +630,45 @@ mod tests {
             notes: None,
             created_at: "2026-01-01T00:00:00Z".to_string(),
             updated_at: "2026-01-01T00:00:00Z".to_string(),
+        }
+    }
+
+    fn import_with_success(
+        repository: &JsonRepository,
+        case_id: String,
+        file_paths: Vec<String>,
+    ) -> Result<crate::models::ImportBatchResult, String> {
+        let extractor = StubExtractor {
+            result: Ok(json!({
+                "SourceFile": "fixture",
+                "File": {
+                    "FileType": "PDF"
+                }
+            })),
+        };
+
+        import_files_with_repository_and_extractor(repository, &extractor, case_id, file_paths)
+    }
+
+    fn import_with_failure(
+        repository: &JsonRepository,
+        case_id: String,
+        file_paths: Vec<String>,
+    ) -> Result<crate::models::ImportBatchResult, String> {
+        let extractor = StubExtractor {
+            result: Err("fixture extraction failed".to_string()),
+        };
+
+        import_files_with_repository_and_extractor(repository, &extractor, case_id, file_paths)
+    }
+
+    struct StubExtractor {
+        result: Result<Value, String>,
+    }
+
+    impl RawMetadataExtractor for StubExtractor {
+        fn extract_raw_metadata(&self, _path: &Path) -> Result<Value, String> {
+            self.result.clone()
         }
     }
 }

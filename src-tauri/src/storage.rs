@@ -1,4 +1,4 @@
-use crate::models::{AppStore, CaseInput, CaseRecord, EvidenceFile};
+use crate::models::{AppStore, CaseInput, CaseRecord, EvidenceFile, RawMetadataRecord};
 use chrono::Utc;
 use std::{fs, path::PathBuf};
 use tauri::{AppHandle, Manager};
@@ -112,6 +112,17 @@ impl JsonRepository {
             .ok_or_else(|| "Evidence file not found".to_string())
     }
 
+    pub fn get_file_raw_metadata(
+        &self,
+        file_id: &str,
+    ) -> Result<Option<RawMetadataRecord>, String> {
+        Ok(self
+            .load()?
+            .raw_metadata
+            .into_iter()
+            .find(|record| record.file_id == file_id))
+    }
+
     pub fn delete_case(&self, case_id: &str) -> Result<CaseRecord, String> {
         let mut store = self.load()?;
         let case_index = store
@@ -131,6 +142,9 @@ impl JsonRepository {
         store
             .metadata_fields
             .retain(|field| !file_ids.contains(&field.file_id));
+        store
+            .raw_metadata
+            .retain(|record| !file_ids.contains(&record.file_id));
         store
             .findings
             .retain(|finding| !file_ids.contains(&finding.file_id));
@@ -152,6 +166,9 @@ impl JsonRepository {
         store
             .metadata_fields
             .retain(|field| field.file_id != deleted.id);
+        store
+            .raw_metadata
+            .retain(|record| record.file_id != deleted.id);
         store
             .findings
             .retain(|finding| finding.file_id != deleted.id);
@@ -199,6 +216,37 @@ impl JsonRepository {
         self.save(&store)?;
         Ok(imported_files)
     }
+
+    pub fn replace_raw_metadata(&self, record: RawMetadataRecord) -> Result<(), String> {
+        let mut store = self.load()?;
+        if !store
+            .evidence_files
+            .iter()
+            .any(|file| file.id == record.file_id)
+        {
+            return Err("Evidence file not found".to_string());
+        }
+
+        if let Some(existing) = store
+            .raw_metadata
+            .iter_mut()
+            .find(|existing| existing.file_id == record.file_id)
+        {
+            *existing = record;
+        } else {
+            store.raw_metadata.push(record);
+        }
+
+        self.save(&store)
+    }
+
+    pub fn delete_raw_metadata(&self, file_id: &str) -> Result<(), String> {
+        let mut store = self.load()?;
+        store
+            .raw_metadata
+            .retain(|record| record.file_id != file_id);
+        self.save(&store)
+    }
 }
 
 #[cfg(test)]
@@ -206,7 +254,9 @@ mod tests {
     use super::JsonRepository;
     use crate::models::{
         AppStore, CaseInput, CaseReport, EvidenceFile, EvidenceStatus, Finding, MetadataField,
+        RawMetadataRecord,
     };
+    use serde_json::json;
     use std::{
         fs,
         path::{Path, PathBuf},
@@ -221,6 +271,7 @@ mod tests {
         assert!(store.cases.is_empty());
         assert!(store.evidence_files.is_empty());
         assert!(store.metadata_fields.is_empty());
+        assert!(store.raw_metadata.is_empty());
         assert!(store.findings.is_empty());
         assert!(store.reports.is_empty());
     }
@@ -381,6 +432,57 @@ mod tests {
     }
 
     #[test]
+    fn raw_metadata_round_trips_and_replaces_by_file_id() {
+        let fixture = StoreFixture::new();
+        let mut store = AppStore::default();
+        store.cases.push(case_record("case-1", "Case"));
+        store
+            .evidence_files
+            .push(evidence_file("file-1", "case-1", "/tmp/a.jpg", 10));
+        fixture
+            .repository
+            .save(&store)
+            .expect("fixture store should save");
+
+        fixture
+            .repository
+            .replace_raw_metadata(raw_metadata(
+                "file-1",
+                json!({"File": {"FileType": "JPEG"}}),
+            ))
+            .expect("raw metadata should save");
+        fixture
+            .repository
+            .replace_raw_metadata(raw_metadata(
+                "file-1",
+                json!({"GPS": {"GPSLatitude": "1 deg"}}),
+            ))
+            .expect("raw metadata should replace");
+
+        let loaded = fixture
+            .repository
+            .get_file_raw_metadata("file-1")
+            .expect("raw metadata should load")
+            .expect("raw metadata should exist");
+        let store = fixture.repository.load().expect("store should load");
+
+        assert_eq!(store.raw_metadata.len(), 1);
+        assert_eq!(loaded.data["GPS"]["GPSLatitude"], "1 deg");
+    }
+
+    #[test]
+    fn replace_raw_metadata_requires_existing_file() {
+        let fixture = StoreFixture::new();
+
+        let error = fixture
+            .repository
+            .replace_raw_metadata(raw_metadata("file-missing", json!({})))
+            .expect_err("missing file should fail");
+
+        assert_eq!(error, "Evidence file not found");
+    }
+
+    #[test]
     fn delete_case_removes_case_and_associated_records_only() {
         let fixture = StoreFixture::new();
         let mut store = AppStore::default();
@@ -395,6 +497,10 @@ mod tests {
         store.metadata_fields = vec![
             metadata_field("field-1", "file-1"),
             metadata_field("field-2", "file-2"),
+        ];
+        store.raw_metadata = vec![
+            raw_metadata("file-1", json!({"File": {"FileType": "PDF"}})),
+            raw_metadata("file-2", json!({"File": {"FileType": "JPEG"}})),
         ];
         store.findings = vec![
             finding("finding-1", "file-1"),
@@ -419,6 +525,8 @@ mod tests {
         assert_eq!(remaining.evidence_files[0].id, "file-2");
         assert_eq!(remaining.metadata_fields.len(), 1);
         assert_eq!(remaining.metadata_fields[0].id, "field-2");
+        assert_eq!(remaining.raw_metadata.len(), 1);
+        assert_eq!(remaining.raw_metadata[0].file_id, "file-2");
         assert_eq!(remaining.findings.len(), 1);
         assert_eq!(remaining.findings[0].id, "finding-2");
         assert_eq!(remaining.reports.len(), 1);
@@ -437,6 +545,10 @@ mod tests {
         store.metadata_fields = vec![
             metadata_field("field-1", "file-1"),
             metadata_field("field-2", "file-2"),
+        ];
+        store.raw_metadata = vec![
+            raw_metadata("file-1", json!({"File": {"FileType": "PDF"}})),
+            raw_metadata("file-2", json!({"File": {"FileType": "JPEG"}})),
         ];
         store.findings = vec![
             finding("finding-1", "file-1"),
@@ -460,6 +572,8 @@ mod tests {
         assert_eq!(remaining.evidence_files[0].id, "file-2");
         assert_eq!(remaining.metadata_fields.len(), 1);
         assert_eq!(remaining.metadata_fields[0].id, "field-2");
+        assert_eq!(remaining.raw_metadata.len(), 1);
+        assert_eq!(remaining.raw_metadata[0].file_id, "file-2");
         assert_eq!(remaining.findings.len(), 1);
         assert_eq!(remaining.findings[0].id, "finding-2");
         assert!(remaining.reports.is_empty());
@@ -549,6 +663,15 @@ mod tests {
             value: "value".to_string(),
             source: "internal".to_string(),
             normalized_category: None,
+        }
+    }
+
+    fn raw_metadata(file_id: &str, data: serde_json::Value) -> RawMetadataRecord {
+        RawMetadataRecord {
+            file_id: file_id.to_string(),
+            source: "exiftool".to_string(),
+            extracted_at: "2026-01-01T00:00:00Z".to_string(),
+            data,
         }
     }
 

@@ -1,6 +1,7 @@
 mod commands;
 mod hashing;
 mod importer;
+mod metadata_extractor;
 mod models;
 mod storage;
 
@@ -20,6 +21,7 @@ pub fn run() {
             commands::get_file,
             commands::get_file_findings,
             commands::get_file_metadata,
+            commands::get_file_raw_metadata,
             commands::get_finding,
             commands::get_import_config,
             commands::import_files,
