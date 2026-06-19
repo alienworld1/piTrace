@@ -27,5 +27,6 @@ time = "=0.3.36"
 chrono = { version = "0.4.45", features = ["serde"] }
 exiftool = "0.3.1"
 infer = "0.19.0"
+rusqlite = { version = "0.32.1", features = ["bundled"] }
 sha2 = "0.10.9"
 uuid = { version = "1.23.3", features = ["v4", "serde"] }
