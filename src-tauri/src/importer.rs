@@ -10,6 +10,7 @@ use crate::{
 use std::{
     fs,
     path::{Path, PathBuf},
+    time::SystemTime,
 };
 use tauri::AppHandle;
 use uuid::Uuid;
@@ -20,7 +21,7 @@ pub fn import_files(
     file_paths: Vec<String>,
 ) -> Result<ImportBatchResult, String> {
     let repository = JsonRepository::new(app)?;
-    let extractor = ExifToolMetadataExtractor::for_app(app);
+    let extractor = ExifToolMetadataExtractor::for_app_bundle(app)?;
     import_files_with_repository_and_extractor(&repository, &extractor, case_id, file_paths)
 }
 
@@ -30,7 +31,7 @@ pub fn import_files_with_repository(
     case_id: String,
     file_paths: Vec<String>,
 ) -> Result<ImportBatchResult, String> {
-    let extractor = ExifToolMetadataExtractor::for_tests();
+    let extractor = ExifToolMetadataExtractor::for_test_fixture()?;
     import_files_with_repository_and_extractor(repository, &extractor, case_id, file_paths)
 }
 
@@ -74,19 +75,19 @@ fn import_files_with_repository_and_extractor(
         .iter()
         .map(|record| record.file.clone())
         .collect::<Vec<_>>();
+    let raw_metadata = import_records
+        .iter()
+        .filter_map(|record| record.raw_metadata.clone())
+        .collect::<Vec<_>>();
     let imported = if imported_files.is_empty() {
         Vec::new()
     } else {
-        repository.replace_imported_files(&case_id, imported_files)?
+        repository.replace_imported_files_with_raw_metadata(
+            &case_id,
+            imported_files,
+            raw_metadata,
+        )?
     };
-
-    for record in import_records {
-        if let Some(raw_metadata) = record.raw_metadata {
-            repository.replace_raw_metadata(raw_metadata)?;
-        } else {
-            repository.delete_raw_metadata(&record.file.id)?;
-        }
-    }
 
     Ok(ImportBatchResult {
         imported_files: imported,
@@ -156,8 +157,8 @@ fn import_one(
         error_message: None,
     };
 
-    build_import_record(&mut file, &path, config)?;
-    let raw_metadata = analyze_imported_file(&mut file, &path, extractor);
+    let analysis_snapshot = build_import_record(&mut file, &path, config)?;
+    let raw_metadata = analyze_imported_file(&mut file, &path, extractor, &analysis_snapshot);
     Ok(ImportRecord { file, raw_metadata })
 }
 
@@ -165,7 +166,7 @@ fn build_import_record(
     file: &mut EvidenceFile,
     path: &Path,
     config: &ImportConfig,
-) -> Result<(), String> {
+) -> Result<FileSnapshot, String> {
     if file.extension.is_empty() || !config.supported_extensions.contains(&file.extension) {
         return Err(format!(
             "Unsupported file extension. Add '{}' to import_config.json to allow this file type.",
@@ -187,7 +188,8 @@ fn build_import_record(
         return Err("Only regular files can be imported.".to_string());
     }
 
-    file.size_bytes = metadata.len();
+    let pre_hash_snapshot = FileSnapshot::from_metadata(metadata);
+    file.size_bytes = pre_hash_snapshot.len;
     let identity = infer::get_from_path(path)
         .map_err(|error| format!("Could not inspect file type: {error}"))?;
     if let Some(identity) = identity {
@@ -196,21 +198,50 @@ fn build_import_record(
     }
 
     file.sha256 = Some(compute_sha256(path)?);
+    let post_hash_snapshot = file_snapshot(path)?;
+    if post_hash_snapshot != pre_hash_snapshot {
+        return Err(
+            "File changed while piTrace was hashing it. Re-import the file when it is stable."
+                .to_string(),
+        );
+    }
     file.status = EvidenceStatus::Pending;
     file.error_message = None;
 
-    Ok(())
+    Ok(post_hash_snapshot)
 }
 
 fn analyze_imported_file(
     file: &mut EvidenceFile,
     path: &Path,
     extractor: &dyn RawMetadataExtractor,
+    analysis_snapshot: &FileSnapshot,
 ) -> Option<RawMetadataRecord> {
     file.status = EvidenceStatus::Analyzing;
 
     match extractor.extract_raw_metadata(path) {
         Ok(data) => {
+            match file_snapshot(path) {
+                Ok(current_snapshot) if &current_snapshot == analysis_snapshot => {}
+                Ok(_) => {
+                    file.status = EvidenceStatus::Error;
+                    file.analyzed_at = Some(now_iso());
+                    file.sha256 = None;
+                    file.error_message = Some(
+                        "File changed during ExifTool analysis. Re-import the file when it is stable."
+                            .to_string(),
+                    );
+                    return None;
+                }
+                Err(error) => {
+                    file.status = EvidenceStatus::Error;
+                    file.analyzed_at = Some(now_iso());
+                    file.sha256 = None;
+                    file.error_message = Some(error);
+                    return None;
+                }
+            }
+
             let extracted_at = now_iso();
             file.status = EvidenceStatus::Complete;
             file.analyzed_at = Some(extracted_at.clone());
@@ -230,6 +261,27 @@ fn analyze_imported_file(
             None
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileSnapshot {
+    len: u64,
+    modified: Option<SystemTime>,
+}
+
+impl FileSnapshot {
+    fn from_metadata(metadata: fs::Metadata) -> Self {
+        Self {
+            len: metadata.len(),
+            modified: metadata.modified().ok(),
+        }
+    }
+}
+
+fn file_snapshot(path: &Path) -> Result<FileSnapshot, String> {
+    fs::metadata(path)
+        .map(FileSnapshot::from_metadata)
+        .map_err(|error| format!("File is unavailable: {error}"))
 }
 
 struct ImportRecord {
@@ -265,6 +317,7 @@ mod tests {
     };
     use serde_json::{json, Value};
     use std::{
+        cell::Cell,
         fs,
         path::{Path, PathBuf},
     };
@@ -582,6 +635,65 @@ mod tests {
     }
 
     #[test]
+    fn import_marks_error_and_clears_raw_metadata_when_file_changes_during_analysis() {
+        let fixture = ImportFixture::new();
+        let file_path = fixture.write_file("sample.pdf", b"%PDF-1.7\n");
+
+        let extractor = MutatingExtractor {
+            replacement: b"%PDF-1.7\nchanged".to_vec(),
+        };
+        let imported = import_files_with_repository_and_extractor(
+            &fixture.repository,
+            &extractor,
+            "case-1".to_string(),
+            vec![file_path.to_string_lossy().to_string()],
+        )
+        .expect("import should keep file record")
+        .imported_files;
+
+        assert_eq!(imported.len(), 1);
+        assert_eq!(imported[0].status, EvidenceStatus::Error);
+        assert_eq!(imported[0].sha256, None);
+        assert!(imported[0]
+            .error_message
+            .as_deref()
+            .is_some_and(|message| message.contains("changed during ExifTool analysis")));
+        assert!(fixture
+            .repository
+            .get_file_raw_metadata(&imported[0].id)
+            .expect("raw metadata lookup should succeed")
+            .is_none());
+    }
+
+    #[test]
+    fn import_reuses_one_extractor_instance_across_files() {
+        let fixture = ImportFixture::new();
+        let first_path = fixture.write_file("first.pdf", b"%PDF-1.7\n");
+        let second_path = fixture.write_file("second.pdf", b"%PDF-1.7\n");
+        let extractor = CountingExtractor {
+            calls: Cell::new(0),
+        };
+
+        let imported = import_files_with_repository_and_extractor(
+            &fixture.repository,
+            &extractor,
+            "case-1".to_string(),
+            vec![
+                first_path.to_string_lossy().to_string(),
+                second_path.to_string_lossy().to_string(),
+            ],
+        )
+        .expect("import should succeed")
+        .imported_files;
+
+        assert_eq!(imported.len(), 2);
+        assert_eq!(extractor.calls.get(), 2);
+        assert!(imported
+            .iter()
+            .all(|file| file.status == EvidenceStatus::Complete));
+    }
+
+    #[test]
     fn import_requires_existing_case() {
         let fixture = ImportFixture::new();
 
@@ -669,6 +781,39 @@ mod tests {
     impl RawMetadataExtractor for StubExtractor {
         fn extract_raw_metadata(&self, _path: &Path) -> Result<Value, String> {
             self.result.clone()
+        }
+    }
+
+    struct MutatingExtractor {
+        replacement: Vec<u8>,
+    }
+
+    impl RawMetadataExtractor for MutatingExtractor {
+        fn extract_raw_metadata(&self, path: &Path) -> Result<Value, String> {
+            fs::write(path, &self.replacement)
+                .map_err(|error| format!("fixture mutation failed: {error}"))?;
+            Ok(json!({
+                "SourceFile": "fixture",
+                "File": {
+                    "FileType": "PDF"
+                }
+            }))
+        }
+    }
+
+    struct CountingExtractor {
+        calls: Cell<u32>,
+    }
+
+    impl RawMetadataExtractor for CountingExtractor {
+        fn extract_raw_metadata(&self, _path: &Path) -> Result<Value, String> {
+            self.calls.set(self.calls.get() + 1);
+            Ok(json!({
+                "SourceFile": "fixture",
+                "File": {
+                    "FileType": "PDF"
+                }
+            }))
         }
     }
 }

@@ -1,6 +1,6 @@
 use crate::models::{AppStore, CaseInput, CaseRecord, EvidenceFile, RawMetadataRecord};
 use chrono::Utc;
-use std::{fs, path::PathBuf};
+use std::{collections::HashSet, fs, path::PathBuf};
 use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
@@ -188,6 +188,7 @@ impl JsonRepository {
         Ok(deleted)
     }
 
+    #[cfg(test)]
     pub fn replace_imported_files(
         &self,
         case_id: &str,
@@ -217,6 +218,53 @@ impl JsonRepository {
         Ok(imported_files)
     }
 
+    pub fn replace_imported_files_with_raw_metadata(
+        &self,
+        case_id: &str,
+        imported_files: Vec<EvidenceFile>,
+        raw_metadata: Vec<RawMetadataRecord>,
+    ) -> Result<Vec<EvidenceFile>, String> {
+        let mut store = self.load()?;
+        if !store.cases.iter().any(|case| case.id == case_id) {
+            return Err("Case not found".to_string());
+        }
+
+        let imported_ids = imported_files
+            .iter()
+            .map(|file| file.id.as_str())
+            .collect::<HashSet<_>>();
+        if raw_metadata
+            .iter()
+            .any(|record| !imported_ids.contains(record.file_id.as_str()))
+        {
+            return Err("Raw metadata must belong to an imported file".to_string());
+        }
+
+        let now = now_iso();
+        if let Some(case) = store.cases.iter_mut().find(|case| case.id == case_id) {
+            case.updated_at = now;
+        }
+
+        for imported in &imported_files {
+            if let Some(existing) = store.evidence_files.iter_mut().find(|file| {
+                file.case_id == case_id && file.original_path == imported.original_path
+            }) {
+                *existing = imported.clone();
+            } else {
+                store.evidence_files.push(imported.clone());
+            }
+        }
+
+        store
+            .raw_metadata
+            .retain(|record| !imported_ids.contains(record.file_id.as_str()));
+        store.raw_metadata.extend(raw_metadata);
+
+        self.save(&store)?;
+        Ok(imported_files)
+    }
+
+    #[cfg(test)]
     pub fn replace_raw_metadata(&self, record: RawMetadataRecord) -> Result<(), String> {
         let mut store = self.load()?;
         if !store
@@ -237,14 +285,6 @@ impl JsonRepository {
             store.raw_metadata.push(record);
         }
 
-        self.save(&store)
-    }
-
-    pub fn delete_raw_metadata(&self, file_id: &str) -> Result<(), String> {
-        let mut store = self.load()?;
-        store
-            .raw_metadata
-            .retain(|record| record.file_id != file_id);
         self.save(&store)
     }
 }
@@ -429,6 +469,84 @@ mod tests {
             .replace_imported_files("case-missing", vec![])
             .expect_err("missing case should fail");
         assert_eq!(error, "Case not found");
+    }
+
+    #[test]
+    fn replace_imported_files_with_raw_metadata_updates_atomically() {
+        let fixture = StoreFixture::new();
+        let mut store = AppStore::default();
+        store.cases.push(case_record("case-1", "Case"));
+        fixture
+            .repository
+            .save(&store)
+            .expect("fixture store should save");
+
+        let file = evidence_file("file-1", "case-1", "/tmp/a.pdf", 10);
+        fixture
+            .repository
+            .replace_imported_files_with_raw_metadata(
+                "case-1",
+                vec![file.clone()],
+                vec![raw_metadata("file-1", json!({"File": {"FileType": "PDF"}}))],
+            )
+            .expect("atomic import should save");
+
+        let loaded = fixture.repository.load().expect("store should load");
+        assert_eq!(loaded.evidence_files.len(), 1);
+        assert_eq!(loaded.raw_metadata.len(), 1);
+        assert_eq!(loaded.raw_metadata[0].file_id, file.id);
+    }
+
+    #[test]
+    fn replace_imported_files_with_raw_metadata_clears_missing_raw_for_imported_file() {
+        let fixture = StoreFixture::new();
+        let mut store = AppStore::default();
+        store.cases.push(case_record("case-1", "Case"));
+        store
+            .evidence_files
+            .push(evidence_file("file-1", "case-1", "/tmp/a.pdf", 10));
+        store
+            .raw_metadata
+            .push(raw_metadata("file-1", json!({"File": {"FileType": "PDF"}})));
+        fixture
+            .repository
+            .save(&store)
+            .expect("fixture store should save");
+
+        fixture
+            .repository
+            .replace_imported_files_with_raw_metadata(
+                "case-1",
+                vec![evidence_file("file-1", "case-1", "/tmp/a.pdf", 10)],
+                vec![],
+            )
+            .expect("atomic import should save");
+
+        let loaded = fixture.repository.load().expect("store should load");
+        assert_eq!(loaded.evidence_files.len(), 1);
+        assert!(loaded.raw_metadata.is_empty());
+    }
+
+    #[test]
+    fn replace_imported_files_with_raw_metadata_rejects_unrelated_raw_record() {
+        let fixture = StoreFixture::new();
+        let mut store = AppStore::default();
+        store.cases.push(case_record("case-1", "Case"));
+        fixture
+            .repository
+            .save(&store)
+            .expect("fixture store should save");
+
+        let error = fixture
+            .repository
+            .replace_imported_files_with_raw_metadata(
+                "case-1",
+                vec![evidence_file("file-1", "case-1", "/tmp/a.pdf", 10)],
+                vec![raw_metadata("file-2", json!({}))],
+            )
+            .expect_err("unrelated raw metadata should fail");
+
+        assert_eq!(error, "Raw metadata must belong to an imported file");
     }
 
     #[test]
