@@ -8,10 +8,11 @@ interface MetadataTableProps {
 export function MetadataTable({ fields }: MetadataTableProps) {
   return (
     <section className="panel-edge rounded-xl p-5">
-      <h2 className="font-display text-xl font-semibold text-ink">Raw metadata</h2>
+      <h2 className="font-display text-xl font-semibold text-ink">Mapped field details</h2>
+      <p className="mt-1 text-sm text-muted">Original ExifTool groups behind the readable fields above.</p>
       <div className="mt-5 overflow-hidden rounded-lg border border-line">
         {fields.length === 0 ? (
-          <p className="bg-surface px-4 py-5 text-sm text-muted">No raw metadata is available yet.</p>
+          <p className="bg-surface px-4 py-5 text-sm text-muted">No mapped metadata fields are available yet.</p>
         ) : (
           <table className="w-full border-collapse text-left text-sm">
             <thead className="bg-panel-high text-xs uppercase tracking-[0.05em] text-primary-soft">
