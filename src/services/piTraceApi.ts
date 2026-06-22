@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   CaseInput,
+  CaseDashboardItem,
   CaseRecord,
   CaseReport,
   EvidenceFile,
@@ -11,8 +12,8 @@ import type {
   RawMetadataRecord,
 } from "../types/forensics";
 
-export function listCases() {
-  return invoke<CaseRecord[]>("list_cases");
+export function listCaseDashboard() {
+  return invoke<CaseDashboardItem[]>("list_case_dashboard");
 }
 
 export function createCase(input: CaseInput) {

@@ -7,12 +7,14 @@ import { ActionButton } from "../components/ui/ActionButton";
 import { EmptyState } from "../components/ui/EmptyState";
 import { MetricCard } from "../components/ui/MetricCard";
 import { useCaseWorkspace } from "../hooks/useCaseWorkspace";
+import { useAsyncAction } from "../hooks/useAsyncAction";
 import { deleteCase, deleteFile } from "../services/piTraceApi";
 import type { EvidenceFile } from "../types/forensics";
 
 export function CaseWorkspacePage() {
   const { caseId } = useParams();
   const navigate = useNavigate();
+  const deletion = useAsyncAction();
   const { data, error, importError, importNotice, importPaths, isImporting, isLoading, reload } = useCaseWorkspace(caseId);
   const caseRecord = data?.caseRecord;
   const files = data?.files ?? [];
@@ -32,8 +34,10 @@ export function CaseWorkspacePage() {
       return;
     }
 
-    await deleteCase(caseRecord.id);
-    navigate("/");
+    const deleted = await deletion.run(`case:${caseRecord.id}`, async () => {
+      await deleteCase(caseRecord.id);
+    });
+    if (deleted) navigate("/");
   }
 
   async function handleRemoveFile(file: EvidenceFile) {
@@ -41,8 +45,10 @@ export function CaseWorkspacePage() {
       return;
     }
 
-    await deleteFile(file.id);
-    await reload();
+    await deletion.run(`file:${file.id}`, async () => {
+      await deleteFile(file.id);
+      await reload();
+    });
   }
 
   return (
@@ -53,13 +59,14 @@ export function CaseWorkspacePage() {
             <ActionButton to={`/cases/${caseRecord.id}/edit`} variant="technical">
               Edit case
             </ActionButton>
-            <ActionButton onClick={handleDeleteCase} variant="danger">
-              Delete case
+            <ActionButton disabled={deletion.isRunning} onClick={handleDeleteCase} variant="danger">
+              {deletion.activeKey === `case:${caseRecord.id}` ? "Deleting..." : "Delete case"}
             </ActionButton>
           </>
         }
         caseRecord={caseRecord}
       />
+      {deletion.error ? <EmptyState description={deletion.error} title="Could not delete local record" /> : null}
       <div className="grid grid-cols-4 gap-4">
         <MetricCard detail="In this case" label="Files" value={String(files.length)} />
         <MetricCard detail="Awaiting analysis" label="Pending" value={String(pendingCount)} />
@@ -69,7 +76,12 @@ export function CaseWorkspacePage() {
       <div className="grid grid-cols-[420px_1fr] gap-6">
         <div className="space-y-6">
           <ImportDropzone config={data?.importConfig} error={importError} isImporting={isImporting} notice={importNotice} onImport={importPaths} />
-          <EvidenceList files={files} onRemoveFile={handleRemoveFile} />
+          <EvidenceList
+            deletingFileId={deletion.activeKey?.startsWith("file:") ? deletion.activeKey.slice(5) : undefined}
+            files={files}
+            isRemoveDisabled={deletion.isRunning}
+            onRemoveFile={handleRemoveFile}
+          />
         </div>
         <div className="space-y-6">
           <section className="panel-edge rounded-xl p-5">

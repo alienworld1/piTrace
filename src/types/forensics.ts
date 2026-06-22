@@ -32,6 +32,13 @@ export interface CaseInput {
   notes?: string;
 }
 
+export interface CaseDashboardItem {
+  caseRecord: CaseRecord;
+  fileCount: number;
+  findingCount: number;
+  highCount: number;
+}
+
 export interface EvidenceFile {
   id: string;
   caseId: string;
