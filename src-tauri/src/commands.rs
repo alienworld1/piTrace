@@ -1,12 +1,12 @@
 use crate::{
     importer,
     models::{
-        CaseInput, CaseRecord, CaseReport, EvidenceFile, Finding, ImportBatchResult, ImportConfig,
-        MetadataField, RawMetadataRecord,
+        CaseDashboardItem, CaseInput, CaseRecord, CaseReport, EvidenceFile, Finding,
+        ImportBatchResult, ImportConfig, MetadataField, RawMetadataRecord,
     },
-    storage::JsonRepository,
+    storage::Repository,
 };
-use tauri::AppHandle;
+use tauri::{AppHandle, State};
 
 #[tauri::command]
 pub fn get_import_config() -> Result<ImportConfig, String> {
@@ -14,119 +14,125 @@ pub fn get_import_config() -> Result<ImportConfig, String> {
 }
 
 #[tauri::command]
-pub fn list_cases(app: AppHandle) -> Result<Vec<CaseRecord>, String> {
-    JsonRepository::new(&app)?.list_cases()
+pub fn list_case_dashboard(
+    repository: State<'_, Repository>,
+) -> Result<Vec<CaseDashboardItem>, String> {
+    repository.list_case_dashboard()
 }
 
 #[tauri::command]
-pub fn create_case(app: AppHandle, input: CaseInput) -> Result<CaseRecord, String> {
-    JsonRepository::new(&app)?.create_case(input)
+pub fn create_case(
+    repository: State<'_, Repository>,
+    input: CaseInput,
+) -> Result<CaseRecord, String> {
+    repository.create_case(input)
 }
 
 #[tauri::command]
 pub fn update_case(
-    app: AppHandle,
+    repository: State<'_, Repository>,
     case_id: String,
     input: CaseInput,
 ) -> Result<CaseRecord, String> {
-    JsonRepository::new(&app)?.update_case(case_id, input)
+    repository.update_case(case_id, input)
 }
 
 #[tauri::command]
-pub fn delete_case(app: AppHandle, case_id: String) -> Result<CaseRecord, String> {
-    JsonRepository::new(&app)?.delete_case(&case_id)
+pub fn delete_case(
+    repository: State<'_, Repository>,
+    case_id: String,
+) -> Result<CaseRecord, String> {
+    repository.delete_case(&case_id)
 }
 
 #[tauri::command]
-pub fn get_case(app: AppHandle, case_id: String) -> Result<CaseRecord, String> {
-    JsonRepository::new(&app)?.get_case(&case_id)
+pub fn get_case(repository: State<'_, Repository>, case_id: String) -> Result<CaseRecord, String> {
+    repository.get_case(&case_id)
 }
 
 #[tauri::command]
-pub fn get_case_files(app: AppHandle, case_id: String) -> Result<Vec<EvidenceFile>, String> {
-    JsonRepository::new(&app)?.get_case_files(&case_id)
+pub fn get_case_files(
+    repository: State<'_, Repository>,
+    case_id: String,
+) -> Result<Vec<EvidenceFile>, String> {
+    repository.get_case_files(&case_id)
 }
 
 #[tauri::command]
-pub fn get_file(app: AppHandle, file_id: String) -> Result<EvidenceFile, String> {
-    JsonRepository::new(&app)?.get_file(&file_id)
+pub fn get_file(
+    repository: State<'_, Repository>,
+    file_id: String,
+) -> Result<EvidenceFile, String> {
+    repository.get_file(&file_id)
 }
 
 #[tauri::command]
-pub fn delete_file(app: AppHandle, file_id: String) -> Result<EvidenceFile, String> {
-    JsonRepository::new(&app)?.delete_file(&file_id)
+pub fn delete_file(
+    repository: State<'_, Repository>,
+    file_id: String,
+) -> Result<EvidenceFile, String> {
+    repository.delete_file(&file_id)
 }
 
 #[tauri::command]
-pub fn import_files(
+pub async fn import_files(
     app: AppHandle,
+    repository: State<'_, Repository>,
     case_id: String,
     file_paths: Vec<String>,
 ) -> Result<ImportBatchResult, String> {
-    importer::import_files(&app, case_id, file_paths)
+    let repository = repository.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        importer::import_files(&app, &repository, case_id, file_paths)
+    })
+    .await
+    .map_err(|error| format!("Import worker failed: {error}"))?
 }
 
 #[tauri::command]
-pub fn get_case_findings(app: AppHandle, case_id: String) -> Result<Vec<Finding>, String> {
-    let repository = JsonRepository::new(&app)?;
-    let store = repository.load()?;
-    let case_file_ids = store
-        .evidence_files
-        .iter()
-        .filter(|file| file.case_id == case_id)
-        .map(|file| file.id.as_str())
-        .collect::<Vec<_>>();
-
-    Ok(store
-        .findings
-        .into_iter()
-        .filter(|finding| case_file_ids.contains(&finding.file_id.as_str()))
-        .collect())
+pub fn get_case_findings(
+    repository: State<'_, Repository>,
+    case_id: String,
+) -> Result<Vec<Finding>, String> {
+    repository.get_case_findings(&case_id)
 }
 
 #[tauri::command]
-pub fn get_file_findings(app: AppHandle, file_id: String) -> Result<Vec<Finding>, String> {
-    Ok(JsonRepository::new(&app)?
-        .load()?
-        .findings
-        .into_iter()
-        .filter(|finding| finding.file_id == file_id)
-        .collect())
+pub fn get_file_findings(
+    repository: State<'_, Repository>,
+    file_id: String,
+) -> Result<Vec<Finding>, String> {
+    repository.get_file_findings(&file_id)
 }
 
 #[tauri::command]
-pub fn get_file_metadata(app: AppHandle, file_id: String) -> Result<Vec<MetadataField>, String> {
-    Ok(JsonRepository::new(&app)?
-        .load()?
-        .metadata_fields
-        .into_iter()
-        .filter(|field| field.file_id == file_id)
-        .collect())
+pub fn get_file_metadata(
+    repository: State<'_, Repository>,
+    file_id: String,
+) -> Result<Vec<MetadataField>, String> {
+    repository.get_file_metadata(&file_id)
 }
 
 #[tauri::command]
 pub fn get_file_raw_metadata(
-    app: AppHandle,
+    repository: State<'_, Repository>,
     file_id: String,
 ) -> Result<Option<RawMetadataRecord>, String> {
-    JsonRepository::new(&app)?.get_file_raw_metadata(&file_id)
+    repository.get_file_raw_metadata(&file_id)
 }
 
 #[tauri::command]
-pub fn get_finding(app: AppHandle, finding_id: String) -> Result<Finding, String> {
-    JsonRepository::new(&app)?
-        .load()?
-        .findings
-        .into_iter()
-        .find(|finding| finding.id == finding_id)
-        .ok_or_else(|| "Finding not found".to_string())
+pub fn get_finding(
+    repository: State<'_, Repository>,
+    finding_id: String,
+) -> Result<Finding, String> {
+    repository.get_finding(&finding_id)
 }
 
 #[tauri::command]
-pub fn get_case_report(app: AppHandle, case_id: String) -> Result<Option<CaseReport>, String> {
-    Ok(JsonRepository::new(&app)?
-        .load()?
-        .reports
-        .into_iter()
-        .find(|report| report.case_id == case_id))
+pub fn get_case_report(
+    repository: State<'_, Repository>,
+    case_id: String,
+) -> Result<Option<CaseReport>, String> {
+    repository.get_case_report(&case_id)
 }

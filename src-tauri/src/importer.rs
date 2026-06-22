@@ -6,9 +6,10 @@ use crate::{
         EvidenceFile, EvidenceStatus, ImportBatchResult, ImportConfig, ImportRejection,
         MetadataField, RawMetadataRecord,
     },
-    storage::{now_iso, JsonRepository},
+    storage::{now_iso, Repository},
 };
 use std::{
+    collections::HashSet,
     fs,
     path::{Path, PathBuf},
     time::SystemTime,
@@ -18,17 +19,17 @@ use uuid::Uuid;
 
 pub fn import_files(
     app: &AppHandle,
+    repository: &Repository,
     case_id: String,
     file_paths: Vec<String>,
 ) -> Result<ImportBatchResult, String> {
-    let repository = JsonRepository::new(app)?;
     let extractor = ExifToolMetadataExtractor::for_app_bundle(app)?;
-    import_files_with_repository_and_extractor(&repository, &extractor, case_id, file_paths)
+    import_files_with_repository_and_extractor(repository, &extractor, case_id, file_paths)
 }
 
 #[cfg(test)]
 pub fn import_files_with_repository(
-    repository: &JsonRepository,
+    repository: &Repository,
     case_id: String,
     file_paths: Vec<String>,
 ) -> Result<ImportBatchResult, String> {
@@ -37,27 +38,42 @@ pub fn import_files_with_repository(
 }
 
 fn import_files_with_repository_and_extractor(
-    repository: &JsonRepository,
+    repository: &Repository,
     extractor: &dyn RawMetadataExtractor,
     case_id: String,
     file_paths: Vec<String>,
 ) -> Result<ImportBatchResult, String> {
-    let store = repository.load()?;
     let config = load_import_config()?;
 
-    if !store.cases.iter().any(|case| case.id == case_id) {
+    if !repository.case_exists(&case_id)? {
         return Err("Case not found".to_string());
     }
 
     let mut rejected_files = Vec::new();
+    let mut seen_paths = HashSet::new();
     let import_records = file_paths
         .into_iter()
         .filter(|path| !path.trim().is_empty())
         .filter_map(|path| {
-            let existing = store
-                .evidence_files
-                .iter()
-                .find(|file| file.case_id == case_id && file.original_path == path);
+            if !seen_paths.insert(path.clone()) {
+                rejected_files.push(ImportRejection {
+                    file_name: display_path_name(&path),
+                    path,
+                    reason: "Duplicate path in this import batch".to_string(),
+                });
+                return None;
+            }
+            let existing = match repository.get_existing_file_for_path(&case_id, &path) {
+                Ok(existing) => existing,
+                Err(reason) => {
+                    rejected_files.push(ImportRejection {
+                        file_name: display_path_name(&path),
+                        path,
+                        reason,
+                    });
+                    return None;
+                }
+            };
             match import_one(&case_id, &path, existing, &config, extractor) {
                 Ok(record) => Some(record),
                 Err(reason) => {
@@ -128,7 +144,7 @@ pub fn load_import_config() -> Result<ImportConfig, String> {
 fn import_one(
     case_id: &str,
     original_path: &str,
-    existing: Option<&EvidenceFile>,
+    existing: Option<EvidenceFile>,
     config: &ImportConfig,
     extractor: &dyn RawMetadataExtractor,
 ) -> Result<ImportRecord, String> {
@@ -147,7 +163,7 @@ fn import_one(
 
     let mut file = EvidenceFile {
         id: existing
-            .map(|file| file.id.clone())
+            .map(|file| file.id)
             .unwrap_or_else(|| format!("file-{}", Uuid::new_v4())),
         case_id: case_id.to_string(),
         original_path: original_path.to_string(),
@@ -328,8 +344,8 @@ mod tests {
     };
     use crate::{
         metadata_extractor::RawMetadataExtractor,
-        models::{AppStore, CaseRecord, EvidenceStatus},
-        storage::JsonRepository,
+        models::{CaseRecord, EvidenceStatus},
+        storage::Repository,
     };
     use serde_json::{json, Value};
     use std::{
@@ -395,8 +411,11 @@ mod tests {
             .expect("raw metadata should persist");
         assert_eq!(raw_metadata.source, "exiftool");
         assert_eq!(raw_metadata.data["File"]["FileType"], "PDF");
-        let store = fixture.repository.load().expect("store should load");
-        assert!(store.metadata_fields.iter().any(|field| {
+        let metadata_fields = fixture
+            .repository
+            .get_file_metadata(&imported[0].id)
+            .expect("metadata should load");
+        assert!(metadata_fields.iter().any(|field| {
             field.file_id == imported[0].id
                 && field.key == "FileType"
                 && field.display_label.as_deref() == Some("File type")
@@ -528,6 +547,41 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_batch_paths_are_rejected_without_rolling_back_other_files() {
+        let fixture = ImportFixture::new();
+        let first = fixture.write_file("first.pdf", b"%PDF-1.7\nfirst");
+        let second = fixture.write_file("second.pdf", b"%PDF-1.7\nsecond");
+        let first_path = first.to_string_lossy().to_string();
+
+        let result = import_with_success(
+            &fixture.repository,
+            "case-1".to_string(),
+            vec![
+                first_path.clone(),
+                first_path.clone(),
+                second.to_string_lossy().to_string(),
+            ],
+        )
+        .expect("duplicate should be a structured rejection");
+
+        assert_eq!(result.imported_files.len(), 2);
+        assert_eq!(result.rejected_files.len(), 1);
+        assert_eq!(result.rejected_files[0].path, first_path);
+        assert_eq!(
+            result.rejected_files[0].reason,
+            "Duplicate path in this import batch"
+        );
+        assert_eq!(
+            fixture
+                .repository
+                .get_case_files("case-1")
+                .expect("files")
+                .len(),
+            2
+        );
+    }
+
+    #[test]
     fn import_replaces_existing_record_for_same_case_and_path() {
         let fixture = ImportFixture::new();
         let file_path = fixture.write_file("duplicate.pdf", b"one");
@@ -594,9 +648,8 @@ mod tests {
             .is_none());
         assert!(fixture
             .repository
-            .load()
-            .expect("store should load")
-            .metadata_fields
+            .get_file_metadata(&imported[0].id)
+            .expect("metadata lookup should succeed")
             .is_empty());
     }
 
@@ -620,9 +673,8 @@ mod tests {
             .is_some());
         assert!(fixture
             .repository
-            .load()
-            .expect("store should load")
-            .metadata_fields
+            .get_file_metadata(&first[0].id)
+            .expect("metadata lookup should succeed")
             .iter()
             .any(|field| field.file_id == first[0].id));
 
@@ -639,9 +691,8 @@ mod tests {
             .is_none());
         assert!(!fixture
             .repository
-            .load()
-            .expect("store should load")
-            .metadata_fields
+            .get_file_metadata(&second[0].id)
+            .expect("metadata lookup should succeed")
             .iter()
             .any(|field| field.file_id == second[0].id));
     }
@@ -676,12 +727,15 @@ mod tests {
         assert_eq!(imported[0].status, EvidenceStatus::Complete);
         assert_eq!(raw_metadata.data["File"]["FileType"], "JPEG");
         assert!(raw_metadata.data["GPS"].is_object());
-        let store = fixture.repository.load().expect("store should load");
-        assert!(store.metadata_fields.iter().any(|field| {
+        let metadata_fields = fixture
+            .repository
+            .get_file_metadata(&imported[0].id)
+            .expect("metadata should load");
+        assert!(metadata_fields.iter().any(|field| {
             field.file_id == imported[0].id
                 && field.normalized_category.as_deref() == Some("location")
         }));
-        assert!(store.metadata_fields.iter().any(|field| {
+        assert!(metadata_fields.iter().any(|field| {
             field.file_id == imported[0].id
                 && field.normalized_category.as_deref() == Some("technical")
         }));
@@ -718,9 +772,8 @@ mod tests {
             .is_none());
         assert!(!fixture
             .repository
-            .load()
-            .expect("store should load")
-            .metadata_fields
+            .get_file_metadata(&imported[0].id)
+            .expect("metadata lookup should succeed")
             .iter()
             .any(|field| field.file_id == imported[0].id));
     }
@@ -766,17 +819,18 @@ mod tests {
 
     struct ImportFixture {
         dir: PathBuf,
-        repository: JsonRepository,
+        repository: Repository,
     }
 
     impl ImportFixture {
         fn new() -> Self {
             let dir = std::env::temp_dir().join(format!("pi-trace-import-test-{}", Uuid::new_v4()));
             fs::create_dir_all(&dir).expect("test directory should be created");
-            let repository = JsonRepository::for_path(dir.join("store.json"));
-            let mut store = AppStore::default();
-            store.cases.push(case_record("case-1"));
-            repository.save(&store).expect("fixture store should save");
+            let repository = Repository::for_test_path(dir.join("store.sqlite3"))
+                .expect("repository should initialize");
+            repository
+                .insert_case(&case_record("case-1"))
+                .expect("fixture case should save");
 
             Self { dir, repository }
         }
@@ -806,7 +860,7 @@ mod tests {
     }
 
     fn import_with_success(
-        repository: &JsonRepository,
+        repository: &Repository,
         case_id: String,
         file_paths: Vec<String>,
     ) -> Result<crate::models::ImportBatchResult, String> {
@@ -823,7 +877,7 @@ mod tests {
     }
 
     fn import_with_failure(
-        repository: &JsonRepository,
+        repository: &Repository,
         case_id: String,
         file_paths: Vec<String>,
     ) -> Result<crate::models::ImportBatchResult, String> {

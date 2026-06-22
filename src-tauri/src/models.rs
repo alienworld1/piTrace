@@ -21,6 +21,15 @@ pub struct CaseInput {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CaseDashboardItem {
+    pub case_record: CaseRecord,
+    pub file_count: u64,
+    pub finding_count: u64,
+    pub high_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct EvidenceFile {
     pub id: String,
     pub case_id: String,
@@ -120,21 +129,4 @@ pub struct DialogFilter {
 pub struct ImportConfig {
     pub supported_extensions: Vec<String>,
     pub dialog_filters: Vec<DialogFilter>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AppStore {
-    #[serde(default)]
-    pub cases: Vec<CaseRecord>,
-    #[serde(default)]
-    pub evidence_files: Vec<EvidenceFile>,
-    #[serde(default)]
-    pub metadata_fields: Vec<MetadataField>,
-    #[serde(default)]
-    pub raw_metadata: Vec<RawMetadataRecord>,
-    #[serde(default)]
-    pub findings: Vec<Finding>,
-    #[serde(default)]
-    pub reports: Vec<CaseReport>,
 }

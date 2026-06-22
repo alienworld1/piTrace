@@ -9,10 +9,12 @@ interface CaseCardProps {
   fileCount: number;
   findingCount: number;
   highCount: number;
+  isDeleteDisabled?: boolean;
+  isDeleting?: boolean;
   onDelete: (caseRecord: CaseRecord) => void | Promise<void>;
 }
 
-export function CaseCard({ caseRecord, fileCount, findingCount, highCount, onDelete }: CaseCardProps) {
+export function CaseCard({ caseRecord, fileCount, findingCount, highCount, isDeleteDisabled = false, isDeleting = false, onDelete }: CaseCardProps) {
   return (
     <article className="panel-edge rounded-xl p-5 transition hover:border-cyan/50 hover:bg-panel-high">
       <div className="flex items-start justify-between gap-4">
@@ -43,8 +45,8 @@ export function CaseCard({ caseRecord, fileCount, findingCount, highCount, onDel
         <ActionButton to={`/cases/${caseRecord.id}/edit`} variant="technical">
           Edit
         </ActionButton>
-        <ActionButton onClick={() => void onDelete(caseRecord)} variant="danger">
-          Delete
+        <ActionButton disabled={isDeleteDisabled} onClick={() => void onDelete(caseRecord)} variant="danger">
+          {isDeleting ? "Deleting..." : "Delete"}
         </ActionButton>
       </div>
     </article>
