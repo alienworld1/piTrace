@@ -9,6 +9,7 @@ use crate::{
     storage::{now_iso, Repository},
 };
 use std::{
+    collections::HashSet,
     fs,
     path::{Path, PathBuf},
     time::SystemTime,
@@ -18,12 +19,12 @@ use uuid::Uuid;
 
 pub fn import_files(
     app: &AppHandle,
+    repository: &Repository,
     case_id: String,
     file_paths: Vec<String>,
 ) -> Result<ImportBatchResult, String> {
-    let repository = Repository::new(app)?;
     let extractor = ExifToolMetadataExtractor::for_app_bundle(app)?;
-    import_files_with_repository_and_extractor(&repository, &extractor, case_id, file_paths)
+    import_files_with_repository_and_extractor(repository, &extractor, case_id, file_paths)
 }
 
 #[cfg(test)]
@@ -49,10 +50,19 @@ fn import_files_with_repository_and_extractor(
     }
 
     let mut rejected_files = Vec::new();
+    let mut seen_paths = HashSet::new();
     let import_records = file_paths
         .into_iter()
         .filter(|path| !path.trim().is_empty())
         .filter_map(|path| {
+            if !seen_paths.insert(path.clone()) {
+                rejected_files.push(ImportRejection {
+                    file_name: display_path_name(&path),
+                    path,
+                    reason: "Duplicate path in this import batch".to_string(),
+                });
+                return None;
+            }
             let existing = match repository.get_existing_file_for_path(&case_id, &path) {
                 Ok(existing) => existing,
                 Err(reason) => {
@@ -534,6 +544,41 @@ mod tests {
         assert_eq!(persisted.len(), 1);
         assert_eq!(persisted[0].file_name, "valid.pdf");
         assert_eq!(persisted[0].status, EvidenceStatus::Complete);
+    }
+
+    #[test]
+    fn duplicate_batch_paths_are_rejected_without_rolling_back_other_files() {
+        let fixture = ImportFixture::new();
+        let first = fixture.write_file("first.pdf", b"%PDF-1.7\nfirst");
+        let second = fixture.write_file("second.pdf", b"%PDF-1.7\nsecond");
+        let first_path = first.to_string_lossy().to_string();
+
+        let result = import_with_success(
+            &fixture.repository,
+            "case-1".to_string(),
+            vec![
+                first_path.clone(),
+                first_path.clone(),
+                second.to_string_lossy().to_string(),
+            ],
+        )
+        .expect("duplicate should be a structured rejection");
+
+        assert_eq!(result.imported_files.len(), 2);
+        assert_eq!(result.rejected_files.len(), 1);
+        assert_eq!(result.rejected_files[0].path, first_path);
+        assert_eq!(
+            result.rejected_files[0].reason,
+            "Duplicate path in this import batch"
+        );
+        assert_eq!(
+            fixture
+                .repository
+                .get_case_files("case-1")
+                .expect("files")
+                .len(),
+            2
+        );
     }
 
     #[test]

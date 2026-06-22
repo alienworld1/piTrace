@@ -1,17 +1,24 @@
 use crate::models::{
-    CaseInput, CaseRecord, CaseReport, EvidenceFile, EvidenceStatus, Finding, MetadataField,
-    RawMetadataRecord,
+    CaseDashboardItem, CaseInput, CaseRecord, CaseReport, EvidenceFile, EvidenceStatus, Finding,
+    MetadataField, RawMetadataRecord,
 };
 use chrono::Utc;
 use rusqlite::{params, types::Type, Connection, OptionalExtension, Row, Transaction};
-use std::{collections::HashSet, fs, path::PathBuf, time::Duration};
+use std::{
+    collections::HashSet,
+    fs,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex, MutexGuard},
+    time::Duration,
+};
 use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
 const SCHEMA_VERSION: i64 = 1;
 
+#[derive(Clone)]
 pub struct Repository {
-    path: PathBuf,
+    connection: Arc<Mutex<Connection>>,
 }
 
 impl Repository {
@@ -20,9 +27,6 @@ impl Repository {
             .path()
             .app_data_dir()
             .map_err(|error| format!("Could not locate app data directory: {error}"))?;
-        fs::create_dir_all(&dir)
-            .map_err(|error| format!("Could not create app data directory: {error}"))?;
-
         Self::for_path(dir.join("pi-trace.sqlite3"))
     }
 
@@ -32,36 +36,40 @@ impl Repository {
     }
 
     fn for_path(path: PathBuf) -> Result<Self, String> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|error| format!("Could not create database directory: {error}"))?;
-        }
-
-        let repository = Self { path };
-        let connection = repository.connect()?;
-        run_migrations(&connection)?;
-        Ok(repository)
-    }
-
-    fn connect(&self) -> Result<Connection, String> {
-        let connection = Connection::open(&self.path)
+        prepare_storage_path(&path)?;
+        let mut connection = Connection::open(&path)
             .map_err(|error| format!("Could not open SQLite database: {error}"))?;
         configure_connection(&connection)?;
-        Ok(connection)
+        run_migrations(&mut connection)?;
+        Ok(Self {
+            connection: Arc::new(Mutex::new(connection)),
+        })
     }
 
-    pub fn list_cases(&self) -> Result<Vec<CaseRecord>, String> {
+    fn connect(&self) -> Result<MutexGuard<'_, Connection>, String> {
+        self.connection
+            .lock()
+            .map_err(|_| "SQLite repository lock is unavailable".to_string())
+    }
+
+    pub fn list_case_dashboard(&self) -> Result<Vec<CaseDashboardItem>, String> {
         let connection = self.connect()?;
         let mut statement = connection
             .prepare(
-                "SELECT id, name, examiner_name, notes, created_at, updated_at
+                "SELECT cases.id, cases.name, cases.examiner_name, cases.notes,
+                        cases.created_at, cases.updated_at,
+                        COUNT(DISTINCT evidence_files.id),
+                        COUNT(findings.id),
+                        COALESCE(SUM(CASE WHEN findings.severity = 'high' THEN 1 ELSE 0 END), 0)
                  FROM cases
-                 ORDER BY updated_at DESC",
+                 LEFT JOIN evidence_files ON evidence_files.case_id = cases.id
+                 LEFT JOIN findings ON findings.file_id = evidence_files.id
+                 GROUP BY cases.id
+                 ORDER BY cases.updated_at DESC",
             )
             .map_err(storage_error)?;
-
         let rows = statement
-            .query_map([], case_from_row)
+            .query_map([], case_dashboard_item_from_row)
             .map_err(storage_error)?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(storage_error)
@@ -119,7 +127,14 @@ impl Repository {
             return Err("Case not found".to_string());
         }
 
-        self.get_case(&case_id)
+        connection
+            .query_row(
+                "SELECT id, name, examiner_name, notes, created_at, updated_at
+                 FROM cases WHERE id = ?1",
+                params![case_id],
+                case_from_row,
+            )
+            .map_err(storage_error)
     }
 
     pub fn case_exists(&self, case_id: &str) -> Result<bool, String> {
@@ -380,22 +395,14 @@ impl Repository {
         raw_metadata: Vec<RawMetadataRecord>,
         metadata_fields: Vec<MetadataField>,
     ) -> Result<Vec<EvidenceFile>, String> {
+        validate_import_batch(case_id, &imported_files, &raw_metadata, &metadata_fields)?;
+        if imported_files.is_empty() {
+            return Ok(Vec::new());
+        }
         let imported_ids = imported_files
             .iter()
             .map(|file| file.id.as_str())
             .collect::<HashSet<_>>();
-        if raw_metadata
-            .iter()
-            .any(|record| !imported_ids.contains(record.file_id.as_str()))
-        {
-            return Err("Raw metadata must belong to an imported file".to_string());
-        }
-        if metadata_fields
-            .iter()
-            .any(|field| !imported_ids.contains(field.file_id.as_str()))
-        {
-            return Err("Metadata fields must belong to an imported file".to_string());
-        }
 
         let mut connection = self.connect()?;
         let transaction = connection.transaction().map_err(storage_error)?;
@@ -405,6 +412,7 @@ impl Repository {
 
         let now = now_iso();
         for imported in &imported_files {
+            ensure_stable_file_identity(&transaction, imported)?;
             insert_or_replace_file(&transaction, imported)?;
         }
         for file_id in imported_ids {
@@ -506,6 +514,98 @@ impl Repository {
     }
 }
 
+fn prepare_storage_path(path: &Path) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "SQLite database path has no parent directory".to_string())?;
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("Could not create database directory: {error}"))?;
+    secure_permissions(parent, path)
+}
+
+#[cfg(unix)]
+fn secure_permissions(directory: &Path, database: &Path) -> Result<(), String> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    fs::set_permissions(directory, fs::Permissions::from_mode(0o700))
+        .map_err(|error| format!("Could not secure database directory: {error}"))?;
+    if fs::symlink_metadata(database).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        return Err("SQLite database path must not be a symbolic link".to_string());
+    }
+    if !database.exists() {
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(database)
+        {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(format!("Could not create SQLite database: {error}")),
+        }
+    }
+    fs::set_permissions(database, fs::Permissions::from_mode(0o600))
+        .map_err(|error| format!("Could not secure SQLite database: {error}"))
+}
+
+#[cfg(not(unix))]
+fn secure_permissions(_directory: &Path, _database: &Path) -> Result<(), String> {
+    Ok(())
+}
+
+fn validate_import_batch(
+    case_id: &str,
+    imported_files: &[EvidenceFile],
+    raw_metadata: &[RawMetadataRecord],
+    metadata_fields: &[MetadataField],
+) -> Result<(), String> {
+    if imported_files.iter().any(|file| file.case_id != case_id) {
+        return Err("Imported files must belong to the supplied case".to_string());
+    }
+
+    let imported_ids = imported_files
+        .iter()
+        .map(|file| file.id.as_str())
+        .collect::<HashSet<_>>();
+    if imported_ids.len() != imported_files.len() {
+        return Err("Imported file IDs must be unique within a batch".to_string());
+    }
+    let imported_paths = imported_files
+        .iter()
+        .map(|file| file.original_path.as_str())
+        .collect::<HashSet<_>>();
+    if imported_paths.len() != imported_files.len() {
+        return Err("Imported file paths must be unique within a batch".to_string());
+    }
+    if raw_metadata
+        .iter()
+        .any(|record| !imported_ids.contains(record.file_id.as_str()))
+    {
+        return Err("Raw metadata must belong to an imported file".to_string());
+    }
+    let raw_file_ids = raw_metadata
+        .iter()
+        .map(|record| record.file_id.as_str())
+        .collect::<HashSet<_>>();
+    if raw_file_ids.len() != raw_metadata.len() {
+        return Err("Each imported file may have only one raw metadata record".to_string());
+    }
+    if metadata_fields
+        .iter()
+        .any(|field| !imported_ids.contains(field.file_id.as_str()))
+    {
+        return Err("Metadata fields must belong to an imported file".to_string());
+    }
+    let field_ids = metadata_fields
+        .iter()
+        .map(|field| field.id.as_str())
+        .collect::<HashSet<_>>();
+    if field_ids.len() != metadata_fields.len() {
+        return Err("Metadata field IDs must be unique within a batch".to_string());
+    }
+    Ok(())
+}
+
 fn configure_connection(connection: &Connection) -> Result<(), String> {
     connection
         .busy_timeout(Duration::from_millis(2_500))
@@ -519,8 +619,84 @@ fn configure_connection(connection: &Connection) -> Result<(), String> {
     Ok(())
 }
 
-fn run_migrations(connection: &Connection) -> Result<(), String> {
-    let version: i64 = connection
+const MIGRATION_0_TO_1: &str = "
+    CREATE TABLE cases (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        examiner_name TEXT,
+        notes TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE evidence_files (
+        id TEXT PRIMARY KEY,
+        case_id TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+        original_path TEXT NOT NULL,
+        file_name TEXT NOT NULL,
+        extension TEXT NOT NULL,
+        detected_mime_type TEXT,
+        detected_file_type TEXT,
+        size_bytes INTEGER NOT NULL,
+        sha256 TEXT,
+        imported_at TEXT NOT NULL,
+        analyzed_at TEXT,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'analyzing', 'complete', 'error')),
+        error_message TEXT,
+        UNIQUE(case_id, original_path)
+    );
+
+    CREATE TABLE metadata_fields (
+        id TEXT PRIMARY KEY,
+        file_id TEXT NOT NULL REFERENCES evidence_files(id) ON DELETE CASCADE,
+        field_group TEXT NOT NULL,
+        field_key TEXT NOT NULL,
+        display_label TEXT,
+        value TEXT NOT NULL,
+        source TEXT NOT NULL,
+        normalized_category TEXT
+    );
+
+    CREATE TABLE raw_metadata (
+        file_id TEXT PRIMARY KEY REFERENCES evidence_files(id) ON DELETE CASCADE,
+        source TEXT NOT NULL,
+        extracted_at TEXT NOT NULL,
+        data_json TEXT NOT NULL
+    );
+
+    CREATE TABLE findings (
+        id TEXT PRIMARY KEY,
+        file_id TEXT NOT NULL REFERENCES evidence_files(id) ON DELETE CASCADE,
+        category TEXT NOT NULL,
+        title TEXT NOT NULL,
+        description TEXT NOT NULL,
+        severity TEXT NOT NULL,
+        confidence TEXT NOT NULL,
+        related_field_ids_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE reports (
+        id TEXT PRIMARY KEY,
+        case_id TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+        generated_at TEXT NOT NULL,
+        format TEXT NOT NULL,
+        include_raw_metadata INTEGER NOT NULL,
+        output_path TEXT
+    );
+
+    CREATE INDEX idx_evidence_files_case_imported
+        ON evidence_files(case_id, imported_at DESC);
+    CREATE INDEX idx_metadata_fields_file ON metadata_fields(file_id);
+    CREATE INDEX idx_findings_file ON findings(file_id);
+    CREATE INDEX idx_reports_case ON reports(case_id);
+";
+
+const MIGRATIONS: &[(i64, &str)] = &[(1, MIGRATION_0_TO_1)];
+
+fn run_migrations(connection: &mut Connection) -> Result<(), String> {
+    validate_migration_sequence()?;
+    let mut version: i64 = connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .map_err(storage_error)?;
     if version > SCHEMA_VERSION {
@@ -528,92 +704,31 @@ fn run_migrations(connection: &Connection) -> Result<(), String> {
             "SQLite database schema version {version} is newer than this piTrace build supports"
         ));
     }
-    if version == SCHEMA_VERSION {
-        return Ok(());
+    while version < SCHEMA_VERSION {
+        let (target_version, sql) = MIGRATIONS
+            .get(version as usize)
+            .ok_or_else(|| format!("Missing SQLite migration from schema version {version}"))?;
+        let transaction = connection.transaction().map_err(storage_error)?;
+        transaction.execute_batch(sql).map_err(storage_error)?;
+        transaction
+            .pragma_update(None, "user_version", target_version)
+            .map_err(storage_error)?;
+        transaction.commit().map_err(storage_error)?;
+        version = *target_version;
     }
 
-    connection
-        .execute_batch(
-            "
-            BEGIN;
+    Ok(())
+}
 
-            CREATE TABLE cases (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                examiner_name TEXT,
-                notes TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-
-            CREATE TABLE evidence_files (
-                id TEXT PRIMARY KEY,
-                case_id TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
-                original_path TEXT NOT NULL,
-                file_name TEXT NOT NULL,
-                extension TEXT NOT NULL,
-                detected_mime_type TEXT,
-                detected_file_type TEXT,
-                size_bytes INTEGER NOT NULL,
-                sha256 TEXT,
-                imported_at TEXT NOT NULL,
-                analyzed_at TEXT,
-                status TEXT NOT NULL CHECK (status IN ('pending', 'analyzing', 'complete', 'error')),
-                error_message TEXT,
-                UNIQUE(case_id, original_path)
-            );
-
-            CREATE TABLE metadata_fields (
-                id TEXT PRIMARY KEY,
-                file_id TEXT NOT NULL REFERENCES evidence_files(id) ON DELETE CASCADE,
-                field_group TEXT NOT NULL,
-                field_key TEXT NOT NULL,
-                display_label TEXT,
-                value TEXT NOT NULL,
-                source TEXT NOT NULL,
-                normalized_category TEXT
-            );
-
-            CREATE TABLE raw_metadata (
-                file_id TEXT PRIMARY KEY REFERENCES evidence_files(id) ON DELETE CASCADE,
-                source TEXT NOT NULL,
-                extracted_at TEXT NOT NULL,
-                data_json TEXT NOT NULL
-            );
-
-            CREATE TABLE findings (
-                id TEXT PRIMARY KEY,
-                file_id TEXT NOT NULL REFERENCES evidence_files(id) ON DELETE CASCADE,
-                category TEXT NOT NULL,
-                title TEXT NOT NULL,
-                description TEXT NOT NULL,
-                severity TEXT NOT NULL,
-                confidence TEXT NOT NULL,
-                related_field_ids_json TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            );
-
-            CREATE TABLE reports (
-                id TEXT PRIMARY KEY,
-                case_id TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
-                generated_at TEXT NOT NULL,
-                format TEXT NOT NULL,
-                include_raw_metadata INTEGER NOT NULL,
-                output_path TEXT
-            );
-
-            CREATE INDEX idx_evidence_files_case_imported
-                ON evidence_files(case_id, imported_at DESC);
-            CREATE INDEX idx_metadata_fields_file ON metadata_fields(file_id);
-            CREATE INDEX idx_findings_file ON findings(file_id);
-            CREATE INDEX idx_reports_case ON reports(case_id);
-
-            PRAGMA user_version = 1;
-            COMMIT;
-            ",
-        )
-        .map_err(storage_error)?;
-
+fn validate_migration_sequence() -> Result<(), String> {
+    if MIGRATIONS.len() != SCHEMA_VERSION as usize
+        || MIGRATIONS
+            .iter()
+            .enumerate()
+            .any(|(index, (version, _))| *version != index as i64 + 1)
+    {
+        return Err("SQLite migration sequence is not contiguous".to_string());
+    }
     Ok(())
 }
 
@@ -630,6 +745,24 @@ fn case_exists_in_transaction(
         .map_err(storage_error)
 }
 
+fn ensure_stable_file_identity(
+    transaction: &Transaction<'_>,
+    file: &EvidenceFile,
+) -> Result<(), String> {
+    let existing_id = transaction
+        .query_row(
+            "SELECT id FROM evidence_files WHERE case_id = ?1 AND original_path = ?2",
+            params![file.case_id, file.original_path],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(storage_error)?;
+    if existing_id.is_some_and(|existing_id| existing_id != file.id) {
+        return Err("An existing evidence path cannot change its file ID".to_string());
+    }
+    Ok(())
+}
+
 fn insert_or_replace_file(
     transaction: &Transaction<'_>,
     file: &EvidenceFile,
@@ -643,7 +776,6 @@ fn insert_or_replace_file(
              )
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT(case_id, original_path) DO UPDATE SET
-                id = excluded.id,
                 file_name = excluded.file_name,
                 extension = excluded.extension,
                 detected_mime_type = excluded.detected_mime_type,
@@ -729,6 +861,15 @@ fn case_from_row(row: &Row<'_>) -> rusqlite::Result<CaseRecord> {
         notes: row.get(3)?,
         created_at: row.get(4)?,
         updated_at: row.get(5)?,
+    })
+}
+
+fn case_dashboard_item_from_row(row: &Row<'_>) -> rusqlite::Result<CaseDashboardItem> {
+    Ok(CaseDashboardItem {
+        case_record: case_from_row(row)?,
+        file_count: i64_to_u64(row.get(6)?, 6)?,
+        finding_count: i64_to_u64(row.get(7)?, 7)?,
+        high_count: i64_to_u64(row.get(8)?, 8)?,
     })
 }
 
@@ -875,10 +1016,12 @@ mod tests {
         CaseInput, CaseRecord, CaseReport, EvidenceFile, EvidenceStatus, Finding, MetadataField,
         RawMetadataRecord,
     };
+    use rusqlite::Connection;
     use serde_json::json;
     use std::{
         fs,
         path::{Path, PathBuf},
+        thread,
     };
     use uuid::Uuid;
 
@@ -888,7 +1031,7 @@ mod tests {
 
         assert!(fixture
             .repository
-            .list_cases()
+            .list_case_dashboard()
             .expect("cases should load")
             .is_empty());
         assert!(fixture
@@ -896,6 +1039,130 @@ mod tests {
             .get_case_files("case-1")
             .expect("files should load")
             .is_empty());
+    }
+
+    #[test]
+    fn migrations_are_idempotent_and_preserve_existing_data() {
+        let dir = std::env::temp_dir().join(format!("pi-trace-migration-test-{}", Uuid::new_v4()));
+        let path = dir.join("store.sqlite3");
+        let repository = Repository::for_test_path(path.clone()).expect("initial migration");
+        repository
+            .insert_case(&case_record("case-1", "Preserved"))
+            .expect("case should save");
+        drop(repository);
+
+        let reopened = Repository::for_test_path(path).expect("migration should be idempotent");
+        assert_eq!(
+            reopened
+                .get_case("case-1")
+                .expect("case should remain")
+                .name,
+            "Preserved"
+        );
+        drop(reopened);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn database_newer_than_supported_schema_is_rejected() {
+        let dir = std::env::temp_dir().join(format!("pi-trace-future-test-{}", Uuid::new_v4()));
+        fs::create_dir_all(&dir).expect("test directory");
+        let path = dir.join("store.sqlite3");
+        let connection = Connection::open(&path).expect("database");
+        connection
+            .pragma_update(None, "user_version", 2)
+            .expect("future version");
+        drop(connection);
+
+        let error = match Repository::for_test_path(path) {
+            Ok(_) => panic!("future schema should fail"),
+            Err(error) => error,
+        };
+        assert!(error.contains("newer than this piTrace build supports"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn database_and_directory_use_owner_only_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir =
+            std::env::temp_dir().join(format!("pi-trace-permissions-test-{}", Uuid::new_v4()));
+        let path = dir.join("store.sqlite3");
+        let repository = Repository::for_test_path(path.clone()).expect("repository");
+        assert_eq!(
+            fs::metadata(&dir).expect("directory").permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::metadata(&path).expect("database").permissions().mode() & 0o777,
+            0o600
+        );
+        drop(repository);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symbolic_link_database_path_is_rejected() {
+        use std::os::unix::fs::symlink;
+
+        let dir = std::env::temp_dir().join(format!("pi-trace-symlink-test-{}", Uuid::new_v4()));
+        fs::create_dir_all(&dir).expect("test directory");
+        let target = dir.join("target");
+        fs::write(&target, b"do not open as sqlite").expect("target");
+        let path = dir.join("store.sqlite3");
+        symlink(&target, &path).expect("symlink");
+
+        let error = match Repository::for_test_path(path) {
+            Ok(_) => panic!("symlink should fail"),
+            Err(error) => error,
+        };
+        assert_eq!(error, "SQLite database path must not be a symbolic link");
+        assert_eq!(
+            fs::read(&target).expect("target remains"),
+            b"do not open as sqlite"
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn shared_repository_serializes_concurrent_reads_and_writes() {
+        let fixture = StoreFixture::new();
+        fixture
+            .repository
+            .insert_case(&case_record("case-1", "Concurrent"))
+            .expect("case");
+        let handles = (0..8)
+            .map(|index| {
+                let repository = fixture.repository.clone();
+                thread::spawn(move || {
+                    if index % 2 == 0 {
+                        repository.get_case("case-1").map(|_| ())
+                    } else {
+                        repository
+                            .create_case(CaseInput {
+                                name: format!("Concurrent {index}"),
+                                examiner_name: None,
+                                notes: None,
+                            })
+                            .map(|_| ())
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        for handle in handles {
+            handle.join().expect("thread").expect("operation");
+        }
+        assert_eq!(
+            fixture
+                .repository
+                .list_case_dashboard()
+                .expect("dashboard")
+                .len(),
+            5
+        );
     }
 
     #[test]
@@ -989,11 +1256,55 @@ mod tests {
 
         let cases = fixture
             .repository
-            .list_cases()
+            .list_case_dashboard()
             .expect("list should succeed");
 
-        assert_eq!(cases[0].id, "case-newer");
-        assert_eq!(cases[1].id, "case-older");
+        assert_eq!(cases[0].case_record.id, "case-newer");
+        assert_eq!(cases[1].case_record.id, "case-older");
+    }
+
+    #[test]
+    fn case_dashboard_returns_aggregate_counts() {
+        let fixture = StoreFixture::new();
+        fixture
+            .repository
+            .insert_case(&case_record("case-1", "Case"))
+            .expect("case");
+        fixture
+            .repository
+            .replace_imported_files_with_metadata(
+                "case-1",
+                vec![
+                    evidence_file("file-1", "case-1", "/tmp/a.pdf", 10),
+                    evidence_file("file-2", "case-1", "/tmp/b.pdf", 20),
+                ],
+                vec![],
+                vec![],
+            )
+            .expect("files");
+        let mut high = finding("finding-1", "file-1");
+        high.severity = "high".to_string();
+        fixture
+            .repository
+            .insert_finding(&high)
+            .expect("high finding");
+        fixture
+            .repository
+            .insert_finding(&finding("finding-2", "file-1"))
+            .expect("low finding");
+        fixture
+            .repository
+            .insert_finding(&finding("finding-3", "file-2"))
+            .expect("other finding");
+
+        let item = fixture
+            .repository
+            .list_case_dashboard()
+            .expect("dashboard")
+            .remove(0);
+        assert_eq!(item.file_count, 2);
+        assert_eq!(item.finding_count, 3);
+        assert_eq!(item.high_count, 1);
     }
 
     #[test]
@@ -1031,6 +1342,35 @@ mod tests {
         assert_eq!(raw.data["File"]["FileType"], "PDF");
         assert_eq!(fields.len(), 1);
         assert_eq!(fields[0].display_label.as_deref(), Some("Display name"));
+    }
+
+    #[test]
+    fn empty_import_batch_is_a_no_op() {
+        let fixture = StoreFixture::new();
+        fixture
+            .repository
+            .insert_case(&case_record("case-1", "Case"))
+            .expect("case");
+        let updated_at = fixture
+            .repository
+            .get_case("case-1")
+            .expect("case")
+            .updated_at;
+
+        let imported = fixture
+            .repository
+            .replace_imported_files_with_metadata("case-1", vec![], vec![], vec![])
+            .expect("empty batch");
+
+        assert!(imported.is_empty());
+        assert_eq!(
+            fixture
+                .repository
+                .get_case("case-1")
+                .expect("case")
+                .updated_at,
+            updated_at
+        );
     }
 
     #[test]
@@ -1103,6 +1443,142 @@ mod tests {
         assert_eq!(
             field_error,
             "Metadata fields must belong to an imported file"
+        );
+    }
+
+    #[test]
+    fn replace_imported_files_rejects_invalid_batches_without_partial_writes() {
+        let fixture = StoreFixture::new();
+        fixture
+            .repository
+            .insert_case(&case_record("case-1", "One"))
+            .expect("case one");
+        fixture
+            .repository
+            .insert_case(&case_record("case-2", "Two"))
+            .expect("case two");
+        let original_updated_at = fixture
+            .repository
+            .get_case("case-1")
+            .expect("case")
+            .updated_at;
+
+        let cross_case = fixture.repository.replace_imported_files_with_metadata(
+            "case-1",
+            vec![evidence_file("file-2", "case-2", "/tmp/b.pdf", 20)],
+            vec![],
+            vec![],
+        );
+        assert_eq!(
+            cross_case.expect_err("cross-case file"),
+            "Imported files must belong to the supplied case"
+        );
+
+        let duplicate_ids = fixture.repository.replace_imported_files_with_metadata(
+            "case-1",
+            vec![
+                evidence_file("file-1", "case-1", "/tmp/a.pdf", 10),
+                evidence_file("file-1", "case-1", "/tmp/b.pdf", 20),
+            ],
+            vec![],
+            vec![],
+        );
+        assert_eq!(
+            duplicate_ids.expect_err("duplicate IDs"),
+            "Imported file IDs must be unique within a batch"
+        );
+
+        let duplicate_paths = fixture.repository.replace_imported_files_with_metadata(
+            "case-1",
+            vec![
+                evidence_file("file-1", "case-1", "/tmp/a.pdf", 10),
+                evidence_file("file-2", "case-1", "/tmp/a.pdf", 20),
+            ],
+            vec![],
+            vec![],
+        );
+        assert_eq!(
+            duplicate_paths.expect_err("duplicate paths"),
+            "Imported file paths must be unique within a batch"
+        );
+
+        let file = evidence_file("file-1", "case-1", "/tmp/a.pdf", 10);
+        let duplicate_raw = fixture.repository.replace_imported_files_with_metadata(
+            "case-1",
+            vec![file.clone()],
+            vec![
+                raw_metadata("file-1", json!({})),
+                raw_metadata("file-1", json!({})),
+            ],
+            vec![],
+        );
+        assert_eq!(
+            duplicate_raw.expect_err("duplicate raw metadata"),
+            "Each imported file may have only one raw metadata record"
+        );
+
+        let duplicate_fields = fixture.repository.replace_imported_files_with_metadata(
+            "case-1",
+            vec![file.clone()],
+            vec![],
+            vec![
+                metadata_field("field-1", "file-1"),
+                metadata_field("field-1", "file-1"),
+            ],
+        );
+        assert_eq!(
+            duplicate_fields.expect_err("duplicate fields"),
+            "Metadata field IDs must be unique within a batch"
+        );
+        assert!(fixture
+            .repository
+            .get_case_files("case-1")
+            .expect("files")
+            .is_empty());
+        assert_eq!(
+            fixture
+                .repository
+                .get_case("case-1")
+                .expect("case")
+                .updated_at,
+            original_updated_at
+        );
+
+        fixture
+            .repository
+            .replace_imported_files_with_metadata("case-1", vec![file], vec![], vec![])
+            .expect("initial file");
+        let stable_updated_at = fixture
+            .repository
+            .get_case("case-1")
+            .expect("case")
+            .updated_at;
+        let changed_id = fixture.repository.replace_imported_files_with_metadata(
+            "case-1",
+            vec![evidence_file(
+                "file-replacement",
+                "case-1",
+                "/tmp/a.pdf",
+                99,
+            )],
+            vec![],
+            vec![],
+        );
+        assert_eq!(
+            changed_id.expect_err("identity change"),
+            "An existing evidence path cannot change its file ID"
+        );
+        assert_eq!(
+            fixture.repository.get_case_files("case-1").expect("files")[0].id,
+            "file-1"
+        );
+        assert_eq!(
+            fixture
+                .repository
+                .get_case("case-1")
+                .expect("case")
+                .updated_at,
+            stable_updated_at
         );
     }
 

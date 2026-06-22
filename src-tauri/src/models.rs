@@ -21,6 +21,15 @@ pub struct CaseInput {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CaseDashboardItem {
+    pub case_record: CaseRecord,
+    pub file_count: u64,
+    pub finding_count: u64,
+    pub high_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct EvidenceFile {
     pub id: String,
     pub case_id: String,
