@@ -4,11 +4,13 @@ import { formatBytes } from "../../utils/format";
 import { Badge } from "../ui/Badge";
 
 interface EvidenceListProps {
+  deletingFileId?: string;
   files: EvidenceFile[];
+  isRemoveDisabled?: boolean;
   onRemoveFile: (file: EvidenceFile) => void | Promise<void>;
 }
 
-export function EvidenceList({ files, onRemoveFile }: EvidenceListProps) {
+export function EvidenceList({ deletingFileId, files, isRemoveDisabled = false, onRemoveFile }: EvidenceListProps) {
   return (
     <section className="panel-edge rounded-xl p-5">
       <div className="flex items-center justify-between">
@@ -33,10 +35,11 @@ export function EvidenceList({ files, onRemoveFile }: EvidenceListProps) {
                 <Badge tone={file.status}>{file.status}</Badge>
                 <button
                   className="rounded-md border border-danger/40 px-3 py-1.5 text-xs font-semibold text-danger transition hover:border-danger hover:bg-danger-strong/20"
+                  disabled={isRemoveDisabled}
                   onClick={() => void onRemoveFile(file)}
                   type="button"
                 >
-                  Remove
+                  {deletingFileId === file.id ? "Removing..." : "Remove"}
                 </button>
               </div>
             </div>

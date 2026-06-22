@@ -3,11 +3,13 @@ import { EmptyState } from "../components/ui/EmptyState";
 import { MetricCard } from "../components/ui/MetricCard";
 import { PanelHeader } from "../components/ui/PanelHeader";
 import { useCaseDashboard } from "../hooks/useCaseDashboard";
+import { useAsyncAction } from "../hooks/useAsyncAction";
 import { deleteCase } from "../services/piTraceApi";
 import type { CaseRecord } from "../types/forensics";
 
 export function CaseDashboardPage() {
   const { data, error, isLoading, reload } = useCaseDashboard();
+  const deletion = useAsyncAction();
   const cases = data?.cases ?? [];
   const items = data?.items ?? [];
 
@@ -16,8 +18,10 @@ export function CaseDashboardPage() {
       return;
     }
 
-    await deleteCase(caseRecord.id);
-    await reload();
+    await deletion.run(caseRecord.id, async () => {
+      await deleteCase(caseRecord.id);
+      await reload();
+    });
   }
 
   return (
@@ -30,6 +34,7 @@ export function CaseDashboardPage() {
       </div>
       {isLoading ? <EmptyState description="Loading local case records." title="Loading cases" /> : null}
       {error ? <EmptyState description={error} title="Could not load cases" /> : null}
+      {deletion.error ? <EmptyState description={deletion.error} title="Could not delete case" /> : null}
       {!isLoading && !error && cases.length === 0 ? (
         <EmptyState description="No cases yet. Create a case to begin local forensic metadata analysis." title="No cases yet" />
       ) : null}
@@ -41,6 +46,8 @@ export function CaseDashboardPage() {
               fileCount={item.fileCount}
               findingCount={item.findingCount}
               highCount={item.highCount}
+              isDeleteDisabled={deletion.isRunning}
+              isDeleting={deletion.activeKey === item.caseRecord.id}
               key={item.caseRecord.id}
               onDelete={handleDeleteCase}
             />

@@ -9,10 +9,12 @@ import { EmptyState } from "../components/ui/EmptyState";
 import { PanelHeader } from "../components/ui/PanelHeader";
 import { deleteFile, getFile, getFileFindings, getFileMetadata, getFileRawMetadata } from "../services/piTraceApi";
 import { useAsyncData } from "../hooks/useAsyncData";
+import { useAsyncAction } from "../hooks/useAsyncAction";
 
 export function FileAnalysisPage() {
   const { fileId } = useParams();
   const navigate = useNavigate();
+  const deletion = useAsyncAction();
   const { data, error, isLoading } = useAsyncData(async () => {
     if (!fileId) {
       throw new Error("File id is missing");
@@ -42,17 +44,20 @@ export function FileAnalysisPage() {
       return;
     }
 
-    await deleteFile(file.id);
-    navigate(`/cases/${file.caseId}`);
+    const deleted = await deletion.run(file.id, async () => {
+      await deleteFile(file.id);
+    });
+    if (deleted) navigate(`/cases/${file.caseId}`);
   }
 
   return (
     <div className="space-y-6">
       <PanelHeader eyebrow="File analysis" title="Metadata review" />
+      {deletion.error ? <EmptyState description={deletion.error} title="Could not remove file" /> : null}
       <FileIdentityPanel
         action={
-          <ActionButton onClick={handleRemoveFile} variant="danger">
-            Remove file
+          <ActionButton disabled={deletion.isRunning} onClick={handleRemoveFile} variant="danger">
+            {deletion.isRunning ? "Removing..." : "Remove file"}
           </ActionButton>
         }
         file={file}
