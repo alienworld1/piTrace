@@ -310,6 +310,10 @@ fn push_normalized_field(
     key: &str,
     value: &Value,
 ) {
+    if is_exiftool_file_identity_field(source, group, key) {
+        return;
+    }
+
     let Some(mapping) = mapping_for(group, key) else {
         return;
     };
@@ -327,6 +331,17 @@ fn push_normalized_field(
         source: source.to_string(),
         normalized_category: Some(mapping.category.to_string()),
     });
+}
+
+fn is_exiftool_file_identity_field(source: &str, group: &str, key: &str) -> bool {
+    if !source.eq_ignore_ascii_case("exiftool") || !group.eq_ignore_ascii_case("file") {
+        return false;
+    }
+
+    matches!(
+        normalize_tag(key).as_str(),
+        "filetype" | "filetypeextension" | "mimetype"
+    )
 }
 
 fn mapping_for(group: &str, key: &str) -> Option<&'static FieldMapping> {
@@ -489,12 +504,43 @@ mod tests {
             && field.normalized_category.as_deref() == Some("timeline")));
         assert!(fields.iter().any(|field| field.key == "Producer"
             && field.normalized_category.as_deref() == Some("software")));
-        assert!(fields.iter().any(|field| field.key == "FileType"
-            && field.display_label.as_deref() == Some("File type")
-            && field.normalized_category.as_deref() == Some("technical")));
+        assert!(fields
+            .iter()
+            .any(|field| field.key == "PageCount"
+                && field.display_label.as_deref() == Some("Page count")
+                && field.normalized_category.as_deref() == Some("technical")));
         assert!(fields.iter().any(|field| field.key == "Model"
             && field.display_label.as_deref() == Some("Device model")
             && field.value == "Model X"));
+    }
+
+    #[test]
+    fn skips_exiftool_file_identity_fields() {
+        let fields = normalize_metadata(
+            "file-1",
+            "exiftool",
+            &json!({
+                "File": {
+                    "FileType": "MP3",
+                    "FileTypeExtension": "mp3",
+                    "MIMEType": "audio/mpeg"
+                },
+                "PNG": {
+                    "ImageWidth": 16,
+                    "ImageHeight": 16
+                }
+            }),
+        );
+
+        assert!(!fields.iter().any(|field| field.group == "File"
+            && matches!(
+                field.key.as_str(),
+                "FileType" | "FileTypeExtension" | "MIMEType"
+            )));
+        assert!(fields.iter().any(|field| field.key == "ImageWidth"
+            && field.normalized_category.as_deref() == Some("technical")));
+        assert!(fields.iter().any(|field| field.key == "ImageHeight"
+            && field.normalized_category.as_deref() == Some("technical")));
     }
 
     #[test]

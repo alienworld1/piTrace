@@ -273,7 +273,8 @@ fn analyze_imported_file(
             file.status = EvidenceStatus::Complete;
             file.analyzed_at = Some(extracted_at.clone());
             file.error_message = None;
-            let metadata_fields = normalize_metadata(&file.id, "exiftool", &data);
+            let mut metadata_fields = normalize_metadata(&file.id, "exiftool", &data);
+            append_internal_identity_fields(file, &mut metadata_fields);
 
             (
                 Some(RawMetadataRecord {
@@ -291,6 +292,44 @@ fn analyze_imported_file(
             file.error_message = Some(error);
             (None, Vec::new())
         }
+    }
+}
+
+fn append_internal_identity_fields(file: &EvidenceFile, fields: &mut Vec<MetadataField>) {
+    if let Some(detected_file_type) = file.detected_file_type.as_deref() {
+        fields.push(internal_identity_field(
+            &file.id,
+            "DetectedFileType",
+            "Detected file type",
+            detected_file_type,
+        ));
+    }
+
+    if let Some(detected_mime_type) = file.detected_mime_type.as_deref() {
+        fields.push(internal_identity_field(
+            &file.id,
+            "DetectedMIMEType",
+            "Detected MIME type",
+            detected_mime_type,
+        ));
+    }
+}
+
+fn internal_identity_field(
+    file_id: &str,
+    key: &str,
+    display_label: &str,
+    value: &str,
+) -> MetadataField {
+    MetadataField {
+        id: format!("field-{}", Uuid::new_v4()),
+        file_id: file_id.to_string(),
+        group: "piTrace".to_string(),
+        key: key.to_string(),
+        display_label: Some(display_label.to_string()),
+        value: value.to_string(),
+        source: "internal".to_string(),
+        normalized_category: Some("technical".to_string()),
     }
 }
 
@@ -417,9 +456,11 @@ mod tests {
             .expect("metadata should load");
         assert!(metadata_fields.iter().any(|field| {
             field.file_id == imported[0].id
-                && field.key == "FileType"
-                && field.display_label.as_deref() == Some("File type")
+                && field.group == "piTrace"
+                && field.key == "DetectedFileType"
+                && field.display_label.as_deref() == Some("Detected file type")
                 && field.value == "PDF"
+                && field.source == "internal"
                 && field.normalized_category.as_deref() == Some("technical")
         }));
     }
@@ -737,6 +778,73 @@ mod tests {
         }));
         assert!(metadata_fields.iter().any(|field| {
             field.file_id == imported[0].id
+                && field.normalized_category.as_deref() == Some("technical")
+        }));
+    }
+
+    #[test]
+    fn renamed_file_uses_content_sniffed_identity_for_mapped_metadata() {
+        let fixture = ImportFixture::new();
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join(".agent")
+            .join("exiftool")
+            .join("t")
+            .join("images")
+            .join("PNG.png");
+        let file_path = fixture.dir.join("renamed-image.mp3");
+        fs::copy(source, &file_path).expect("fixture image should copy");
+
+        let imported = import_files_with_repository(
+            &fixture.repository,
+            "case-1".to_string(),
+            vec![file_path.to_string_lossy().to_string()],
+        )
+        .expect("mismatched file should import")
+        .imported_files;
+
+        assert_eq!(imported.len(), 1);
+        assert_eq!(imported[0].status, EvidenceStatus::Complete);
+        assert_eq!(imported[0].extension, "mp3");
+        assert_eq!(imported[0].detected_file_type.as_deref(), Some("PNG"));
+        assert_eq!(imported[0].detected_mime_type.as_deref(), Some("image/png"));
+
+        let raw_metadata = fixture
+            .repository
+            .get_file_raw_metadata(&imported[0].id)
+            .expect("raw metadata should load")
+            .expect("raw metadata should persist");
+        assert_eq!(raw_metadata.source, "exiftool");
+        assert_eq!(raw_metadata.data["File"]["FileType"], "PNG");
+
+        let metadata_fields = fixture
+            .repository
+            .get_file_metadata(&imported[0].id)
+            .expect("metadata should load");
+        assert!(!metadata_fields.iter().any(|field| {
+            field.source == "exiftool"
+                && field.group == "File"
+                && field.key == "FileType"
+                && field.value == "MP3"
+        }));
+        assert!(!metadata_fields.iter().any(|field| {
+            field.source == "exiftool"
+                && field.group == "File"
+                && field.key == "MIMEType"
+                && field.value == "audio/mpeg"
+        }));
+        assert!(metadata_fields.iter().any(|field| {
+            field.source == "internal"
+                && field.group == "piTrace"
+                && field.key == "DetectedFileType"
+                && field.value == "PNG"
+                && field.normalized_category.as_deref() == Some("technical")
+        }));
+        assert!(metadata_fields.iter().any(|field| {
+            field.source == "internal"
+                && field.group == "piTrace"
+                && field.key == "DetectedMIMEType"
+                && field.value == "image/png"
                 && field.normalized_category.as_deref() == Some("technical")
         }));
     }

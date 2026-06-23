@@ -24,4 +24,6 @@ dist-ssr
 *.sw?
 .agent
 .codex
+AGENTS.md
+
 
