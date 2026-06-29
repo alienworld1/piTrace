@@ -481,6 +481,7 @@ impl Repository {
 
     #[cfg(test)]
     fn insert_finding(&self, finding: &Finding) -> Result<(), String> {
+        validate_finding_values(finding)?;
         let connection = self.connect()?;
         let related_field_ids_json = serde_json::to_string(&finding.related_field_ids)
             .map_err(|error| format!("Could not serialize finding field references: {error}"))?;
@@ -630,6 +631,9 @@ fn validate_import_batch(
     if finding_ids.len() != findings.len() {
         return Err("Finding IDs must be unique within a batch".to_string());
     }
+    for finding in findings {
+        validate_finding_values(finding)?;
+    }
     let field_file_ids = metadata_fields
         .iter()
         .map(|field| (field.id.as_str(), field.file_id.as_str()))
@@ -644,6 +648,29 @@ fn validate_import_batch(
         return Err("Finding field references must belong to imported metadata".to_string());
     }
     Ok(())
+}
+
+fn validate_finding_values(finding: &Finding) -> Result<(), String> {
+    if !matches!(
+        finding.category.as_str(),
+        "identity" | "location" | "timeline" | "software" | "integrity" | "privacy"
+    ) {
+        return Err("Finding category is not supported".to_string());
+    }
+
+    if !is_finding_level(&finding.severity) {
+        return Err("Finding severity is not supported".to_string());
+    }
+
+    if !is_finding_level(&finding.confidence) {
+        return Err("Finding confidence is not supported".to_string());
+    }
+
+    Ok(())
+}
+
+fn is_finding_level(value: &str) -> bool {
+    matches!(value, "low" | "medium" | "high")
 }
 
 fn configure_connection(connection: &Connection) -> Result<(), String> {
@@ -873,6 +900,7 @@ fn insert_metadata_field(
 }
 
 fn insert_finding(transaction: &Transaction<'_>, finding: &Finding) -> Result<(), String> {
+    validate_finding_values(finding)?;
     let related_field_ids_json = serde_json::to_string(&finding.related_field_ids)
         .map_err(|error| format!("Could not serialize finding field references: {error}"))?;
     transaction
@@ -1642,6 +1670,48 @@ mod tests {
         assert_eq!(
             duplicate_fields.expect_err("duplicate fields"),
             "Metadata field IDs must be unique within a batch"
+        );
+
+        let mut bad_category = finding("finding-1", "file-1");
+        bad_category.category = "unsupported".to_string();
+        let invalid_category = fixture.repository.replace_imported_files_with_metadata(
+            "case-1",
+            vec![file.clone()],
+            vec![],
+            vec![metadata_field("field-1", "file-1")],
+            vec![bad_category],
+        );
+        assert_eq!(
+            invalid_category.expect_err("invalid category"),
+            "Finding category is not supported"
+        );
+
+        let mut bad_severity = finding("finding-1", "file-1");
+        bad_severity.severity = "urgent".to_string();
+        let invalid_severity = fixture.repository.replace_imported_files_with_metadata(
+            "case-1",
+            vec![file.clone()],
+            vec![],
+            vec![metadata_field("field-1", "file-1")],
+            vec![bad_severity],
+        );
+        assert_eq!(
+            invalid_severity.expect_err("invalid severity"),
+            "Finding severity is not supported"
+        );
+
+        let mut bad_confidence = finding("finding-1", "file-1");
+        bad_confidence.confidence = "certain".to_string();
+        let invalid_confidence = fixture.repository.replace_imported_files_with_metadata(
+            "case-1",
+            vec![file.clone()],
+            vec![],
+            vec![metadata_field("field-1", "file-1")],
+            vec![bad_confidence],
+        );
+        assert_eq!(
+            invalid_confidence.expect_err("invalid confidence"),
+            "Finding confidence is not supported"
         );
         assert!(fixture
             .repository
