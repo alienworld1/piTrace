@@ -5,7 +5,7 @@ use crate::models::{
 use chrono::Utc;
 use rusqlite::{params, types::Type, Connection, OptionalExtension, Row, Transaction};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard},
@@ -394,8 +394,15 @@ impl Repository {
         imported_files: Vec<EvidenceFile>,
         raw_metadata: Vec<RawMetadataRecord>,
         metadata_fields: Vec<MetadataField>,
+        findings: Vec<Finding>,
     ) -> Result<Vec<EvidenceFile>, String> {
-        validate_import_batch(case_id, &imported_files, &raw_metadata, &metadata_fields)?;
+        validate_import_batch(
+            case_id,
+            &imported_files,
+            &raw_metadata,
+            &metadata_fields,
+            &findings,
+        )?;
         if imported_files.is_empty() {
             return Ok(Vec::new());
         }
@@ -428,12 +435,18 @@ impl Repository {
                     params![file_id],
                 )
                 .map_err(storage_error)?;
+            transaction
+                .execute("DELETE FROM findings WHERE file_id = ?1", params![file_id])
+                .map_err(storage_error)?;
         }
         for record in &raw_metadata {
             insert_raw_metadata(&transaction, record)?;
         }
         for field in &metadata_fields {
             insert_metadata_field(&transaction, field)?;
+        }
+        for finding in &findings {
+            insert_finding(&transaction, finding)?;
         }
         transaction
             .execute(
@@ -468,6 +481,7 @@ impl Repository {
 
     #[cfg(test)]
     fn insert_finding(&self, finding: &Finding) -> Result<(), String> {
+        validate_finding_values(finding)?;
         let connection = self.connect()?;
         let related_field_ids_json = serde_json::to_string(&finding.related_field_ids)
             .map_err(|error| format!("Could not serialize finding field references: {error}"))?;
@@ -558,6 +572,7 @@ fn validate_import_batch(
     imported_files: &[EvidenceFile],
     raw_metadata: &[RawMetadataRecord],
     metadata_fields: &[MetadataField],
+    findings: &[Finding],
 ) -> Result<(), String> {
     if imported_files.iter().any(|file| file.case_id != case_id) {
         return Err("Imported files must belong to the supplied case".to_string());
@@ -603,7 +618,59 @@ fn validate_import_batch(
     if field_ids.len() != metadata_fields.len() {
         return Err("Metadata field IDs must be unique within a batch".to_string());
     }
+    if findings
+        .iter()
+        .any(|finding| !imported_ids.contains(finding.file_id.as_str()))
+    {
+        return Err("Findings must belong to an imported file".to_string());
+    }
+    let finding_ids = findings
+        .iter()
+        .map(|finding| finding.id.as_str())
+        .collect::<HashSet<_>>();
+    if finding_ids.len() != findings.len() {
+        return Err("Finding IDs must be unique within a batch".to_string());
+    }
+    for finding in findings {
+        validate_finding_values(finding)?;
+    }
+    let field_file_ids = metadata_fields
+        .iter()
+        .map(|field| (field.id.as_str(), field.file_id.as_str()))
+        .collect::<HashMap<_, _>>();
+    if findings.iter().any(|finding| {
+        finding.related_field_ids.iter().any(|field_id| {
+            field_file_ids
+                .get(field_id.as_str())
+                .is_none_or(|file_id| file_id != &finding.file_id.as_str())
+        })
+    }) {
+        return Err("Finding field references must belong to imported metadata".to_string());
+    }
     Ok(())
+}
+
+fn validate_finding_values(finding: &Finding) -> Result<(), String> {
+    if !matches!(
+        finding.category.as_str(),
+        "identity" | "location" | "timeline" | "software" | "integrity" | "privacy"
+    ) {
+        return Err("Finding category is not supported".to_string());
+    }
+
+    if !is_finding_level(&finding.severity) {
+        return Err("Finding severity is not supported".to_string());
+    }
+
+    if !is_finding_level(&finding.confidence) {
+        return Err("Finding confidence is not supported".to_string());
+    }
+
+    Ok(())
+}
+
+fn is_finding_level(value: &str) -> bool {
+    matches!(value, "low" | "medium" | "high")
 }
 
 fn configure_connection(connection: &Connection) -> Result<(), String> {
@@ -826,6 +893,31 @@ fn insert_metadata_field(
                 field.value,
                 field.source,
                 field.normalized_category
+            ],
+        )
+        .map_err(storage_error)?;
+    Ok(())
+}
+
+fn insert_finding(transaction: &Transaction<'_>, finding: &Finding) -> Result<(), String> {
+    validate_finding_values(finding)?;
+    let related_field_ids_json = serde_json::to_string(&finding.related_field_ids)
+        .map_err(|error| format!("Could not serialize finding field references: {error}"))?;
+    transaction
+        .execute(
+            "INSERT INTO findings (id, file_id, category, title, description, severity,
+                                   confidence, related_field_ids_json, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                finding.id,
+                finding.file_id,
+                finding.category,
+                finding.title,
+                finding.description,
+                finding.severity,
+                finding.confidence,
+                related_field_ids_json,
+                finding.created_at
             ],
         )
         .map_err(storage_error)?;
@@ -1280,6 +1372,7 @@ mod tests {
                 ],
                 vec![],
                 vec![],
+                vec![],
             )
             .expect("files");
         let mut high = finding("finding-1", "file-1");
@@ -1323,6 +1416,7 @@ mod tests {
                 vec![file.clone()],
                 vec![raw_metadata("file-1", json!({"File": {"FileType": "PDF"}}))],
                 vec![metadata_field("field-1", "file-1")],
+                vec![finding("finding-1", "file-1")],
             )
             .expect("atomic import should save");
 
@@ -1336,12 +1430,18 @@ mod tests {
             .repository
             .get_file_metadata("file-1")
             .expect("metadata fields");
+        let findings = fixture
+            .repository
+            .get_file_findings("file-1")
+            .expect("findings");
 
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].id, file.id);
         assert_eq!(raw.data["File"]["FileType"], "PDF");
         assert_eq!(fields.len(), 1);
         assert_eq!(fields[0].display_label.as_deref(), Some("Display name"));
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].id, "finding-1");
     }
 
     #[test]
@@ -1359,7 +1459,7 @@ mod tests {
 
         let imported = fixture
             .repository
-            .replace_imported_files_with_metadata("case-1", vec![], vec![], vec![])
+            .replace_imported_files_with_metadata("case-1", vec![], vec![], vec![], vec![])
             .expect("empty batch");
 
         assert!(imported.is_empty());
@@ -1387,6 +1487,7 @@ mod tests {
                 vec![evidence_file("file-1", "case-1", "/tmp/a.pdf", 10)],
                 vec![raw_metadata("file-1", json!({"File": {"FileType": "PDF"}}))],
                 vec![metadata_field("field-1", "file-1")],
+                vec![finding("finding-1", "file-1")],
             )
             .expect("initial import should save");
 
@@ -1395,6 +1496,7 @@ mod tests {
             .replace_imported_files_with_metadata(
                 "case-1",
                 vec![evidence_file("file-1", "case-1", "/tmp/a.pdf", 10)],
+                vec![],
                 vec![],
                 vec![],
             )
@@ -1409,6 +1511,11 @@ mod tests {
             .repository
             .get_file_metadata("file-1")
             .expect("metadata fields should load")
+            .is_empty());
+        assert!(fixture
+            .repository
+            .get_file_findings("file-1")
+            .expect("findings should load")
             .is_empty());
     }
 
@@ -1427,6 +1534,7 @@ mod tests {
                 vec![evidence_file("file-1", "case-1", "/tmp/a.pdf", 10)],
                 vec![raw_metadata("file-2", json!({}))],
                 vec![],
+                vec![],
             )
             .expect_err("unrelated raw metadata should fail");
         let field_error = fixture
@@ -1436,13 +1544,41 @@ mod tests {
                 vec![evidence_file("file-1", "case-1", "/tmp/a.pdf", 10)],
                 vec![],
                 vec![metadata_field("field-1", "file-2")],
+                vec![],
             )
             .expect_err("unrelated metadata field should fail");
+        let finding_error = fixture
+            .repository
+            .replace_imported_files_with_metadata(
+                "case-1",
+                vec![evidence_file("file-1", "case-1", "/tmp/a.pdf", 10)],
+                vec![],
+                vec![],
+                vec![finding("finding-1", "file-2")],
+            )
+            .expect_err("unrelated finding should fail");
+        let mut bad_field_reference = finding("finding-1", "file-1");
+        bad_field_reference.related_field_ids = vec!["field-missing".to_string()];
+        let finding_field_error = fixture
+            .repository
+            .replace_imported_files_with_metadata(
+                "case-1",
+                vec![evidence_file("file-1", "case-1", "/tmp/a.pdf", 10)],
+                vec![],
+                vec![metadata_field("field-1", "file-1")],
+                vec![bad_field_reference],
+            )
+            .expect_err("missing finding metadata reference should fail");
 
         assert_eq!(raw_error, "Raw metadata must belong to an imported file");
         assert_eq!(
             field_error,
             "Metadata fields must belong to an imported file"
+        );
+        assert_eq!(finding_error, "Findings must belong to an imported file");
+        assert_eq!(
+            finding_field_error,
+            "Finding field references must belong to imported metadata"
         );
     }
 
@@ -1468,6 +1604,7 @@ mod tests {
             vec![evidence_file("file-2", "case-2", "/tmp/b.pdf", 20)],
             vec![],
             vec![],
+            vec![],
         );
         assert_eq!(
             cross_case.expect_err("cross-case file"),
@@ -1482,6 +1619,7 @@ mod tests {
             ],
             vec![],
             vec![],
+            vec![],
         );
         assert_eq!(
             duplicate_ids.expect_err("duplicate IDs"),
@@ -1494,6 +1632,7 @@ mod tests {
                 evidence_file("file-1", "case-1", "/tmp/a.pdf", 10),
                 evidence_file("file-2", "case-1", "/tmp/a.pdf", 20),
             ],
+            vec![],
             vec![],
             vec![],
         );
@@ -1511,6 +1650,7 @@ mod tests {
                 raw_metadata("file-1", json!({})),
             ],
             vec![],
+            vec![],
         );
         assert_eq!(
             duplicate_raw.expect_err("duplicate raw metadata"),
@@ -1525,10 +1665,53 @@ mod tests {
                 metadata_field("field-1", "file-1"),
                 metadata_field("field-1", "file-1"),
             ],
+            vec![],
         );
         assert_eq!(
             duplicate_fields.expect_err("duplicate fields"),
             "Metadata field IDs must be unique within a batch"
+        );
+
+        let mut bad_category = finding("finding-1", "file-1");
+        bad_category.category = "unsupported".to_string();
+        let invalid_category = fixture.repository.replace_imported_files_with_metadata(
+            "case-1",
+            vec![file.clone()],
+            vec![],
+            vec![metadata_field("field-1", "file-1")],
+            vec![bad_category],
+        );
+        assert_eq!(
+            invalid_category.expect_err("invalid category"),
+            "Finding category is not supported"
+        );
+
+        let mut bad_severity = finding("finding-1", "file-1");
+        bad_severity.severity = "urgent".to_string();
+        let invalid_severity = fixture.repository.replace_imported_files_with_metadata(
+            "case-1",
+            vec![file.clone()],
+            vec![],
+            vec![metadata_field("field-1", "file-1")],
+            vec![bad_severity],
+        );
+        assert_eq!(
+            invalid_severity.expect_err("invalid severity"),
+            "Finding severity is not supported"
+        );
+
+        let mut bad_confidence = finding("finding-1", "file-1");
+        bad_confidence.confidence = "certain".to_string();
+        let invalid_confidence = fixture.repository.replace_imported_files_with_metadata(
+            "case-1",
+            vec![file.clone()],
+            vec![],
+            vec![metadata_field("field-1", "file-1")],
+            vec![bad_confidence],
+        );
+        assert_eq!(
+            invalid_confidence.expect_err("invalid confidence"),
+            "Finding confidence is not supported"
         );
         assert!(fixture
             .repository
@@ -1546,7 +1729,7 @@ mod tests {
 
         fixture
             .repository
-            .replace_imported_files_with_metadata("case-1", vec![file], vec![], vec![])
+            .replace_imported_files_with_metadata("case-1", vec![file], vec![], vec![], vec![])
             .expect("initial file");
         let stable_updated_at = fixture
             .repository
@@ -1561,6 +1744,7 @@ mod tests {
                 "/tmp/a.pdf",
                 99,
             )],
+            vec![],
             vec![],
             vec![],
         );
@@ -1593,6 +1777,7 @@ mod tests {
                 vec![evidence_file("file-1", "case-missing", "/tmp/a.pdf", 10)],
                 vec![],
                 vec![],
+                vec![],
             )
             .expect_err("missing case should fail");
 
@@ -1617,6 +1802,7 @@ mod tests {
                 vec![evidence_file("file-1", "case-1", "/tmp/a.pdf", 10)],
                 vec![raw_metadata("file-1", json!({"File": {"FileType": "PDF"}}))],
                 vec![metadata_field("field-1", "file-1")],
+                vec![],
             )
             .expect("case 1 data should save");
         fixture
@@ -1629,6 +1815,7 @@ mod tests {
                     json!({"File": {"FileType": "JPEG"}}),
                 )],
                 vec![metadata_field("field-2", "file-2")],
+                vec![],
             )
             .expect("case 2 data should save");
         fixture
@@ -1716,6 +1903,7 @@ mod tests {
                     metadata_field("field-1", "file-1"),
                     metadata_field("field-2", "file-2"),
                 ],
+                vec![],
             )
             .expect("files should save");
         fixture

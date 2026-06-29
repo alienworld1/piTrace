@@ -243,6 +243,30 @@ const FIELD_MAPPINGS: &[FieldMapping] = &[
         category: "software",
     },
     FieldMapping {
+        group: None,
+        tag: "serialnumber",
+        label: "Serial number",
+        category: "technical",
+    },
+    FieldMapping {
+        group: None,
+        tag: "bodyserialnumber",
+        label: "Body serial number",
+        category: "technical",
+    },
+    FieldMapping {
+        group: None,
+        tag: "cameraserialnumber",
+        label: "Camera serial number",
+        category: "technical",
+    },
+    FieldMapping {
+        group: None,
+        tag: "lensserialnumber",
+        label: "Lens serial number",
+        category: "technical",
+    },
+    FieldMapping {
         group: Some("file"),
         tag: "filetype",
         label: "File type",
@@ -504,14 +528,39 @@ mod tests {
             && field.normalized_category.as_deref() == Some("timeline")));
         assert!(fields.iter().any(|field| field.key == "Producer"
             && field.normalized_category.as_deref() == Some("software")));
-        assert!(fields
-            .iter()
-            .any(|field| field.key == "PageCount"
-                && field.display_label.as_deref() == Some("Page count")
-                && field.normalized_category.as_deref() == Some("technical")));
+        assert!(fields.iter().any(|field| field.key == "PageCount"
+            && field.display_label.as_deref() == Some("Page count")
+            && field.normalized_category.as_deref() == Some("technical")));
         assert!(fields.iter().any(|field| field.key == "Model"
             && field.display_label.as_deref() == Some("Device model")
             && field.value == "Model X"));
+    }
+
+    #[test]
+    fn maps_serial_fields_for_privacy_review() {
+        let fields = normalize_metadata(
+            "file-1",
+            "exiftool",
+            &json!({
+                "EXIF": {
+                    "SerialNumber": "12345",
+                    "BodySerialNumber": "body-123",
+                    "CameraSerialNumber": "camera-123",
+                    "LensSerialNumber": "lens-123"
+                }
+            }),
+        );
+
+        assert_eq!(fields.len(), 4);
+        assert!(fields.iter().any(|field| field.key == "SerialNumber"
+            && field.display_label.as_deref() == Some("Serial number")
+            && field.normalized_category.as_deref() == Some("technical")));
+        assert!(fields.iter().any(|field| field.key == "BodySerialNumber"
+            && field.display_label.as_deref() == Some("Body serial number")));
+        assert!(fields.iter().any(|field| field.key == "CameraSerialNumber"
+            && field.display_label.as_deref() == Some("Camera serial number")));
+        assert!(fields.iter().any(|field| field.key == "LensSerialNumber"
+            && field.display_label.as_deref() == Some("Lens serial number")));
     }
 
     #[test]
