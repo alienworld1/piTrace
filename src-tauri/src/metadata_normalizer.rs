@@ -504,11 +504,9 @@ mod tests {
             && field.normalized_category.as_deref() == Some("timeline")));
         assert!(fields.iter().any(|field| field.key == "Producer"
             && field.normalized_category.as_deref() == Some("software")));
-        assert!(fields
-            .iter()
-            .any(|field| field.key == "PageCount"
-                && field.display_label.as_deref() == Some("Page count")
-                && field.normalized_category.as_deref() == Some("technical")));
+        assert!(fields.iter().any(|field| field.key == "PageCount"
+            && field.display_label.as_deref() == Some("Page count")
+            && field.normalized_category.as_deref() == Some("technical")));
         assert!(fields.iter().any(|field| field.key == "Model"
             && field.display_label.as_deref() == Some("Device model")
             && field.value == "Model X"));

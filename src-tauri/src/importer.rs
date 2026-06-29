@@ -1,9 +1,10 @@
 use crate::{
+    findings_engine::generate_findings,
     hashing::compute_sha256,
     metadata_extractor::{ExifToolMetadataExtractor, RawMetadataExtractor},
     metadata_normalizer::normalize_metadata,
     models::{
-        EvidenceFile, EvidenceStatus, ImportBatchResult, ImportConfig, ImportRejection,
+        EvidenceFile, EvidenceStatus, Finding, ImportBatchResult, ImportConfig, ImportRejection,
         MetadataField, RawMetadataRecord,
     },
     storage::{now_iso, Repository},
@@ -100,6 +101,10 @@ fn import_files_with_repository_and_extractor(
         .iter()
         .flat_map(|record| record.metadata_fields.clone())
         .collect::<Vec<_>>();
+    let findings = import_records
+        .iter()
+        .flat_map(|record| record.findings.clone())
+        .collect::<Vec<_>>();
     let imported = if imported_files.is_empty() {
         Vec::new()
     } else {
@@ -108,6 +113,7 @@ fn import_files_with_repository_and_extractor(
             imported_files,
             raw_metadata,
             metadata_fields,
+            findings,
         )?
     };
 
@@ -180,12 +186,13 @@ fn import_one(
     };
 
     let analysis_snapshot = build_import_record(&mut file, &path, config)?;
-    let (raw_metadata, metadata_fields) =
+    let (raw_metadata, metadata_fields, findings) =
         analyze_imported_file(&mut file, &path, extractor, &analysis_snapshot);
     Ok(ImportRecord {
         file,
         raw_metadata,
         metadata_fields,
+        findings,
     })
 }
 
@@ -243,7 +250,7 @@ fn analyze_imported_file(
     path: &Path,
     extractor: &dyn RawMetadataExtractor,
     analysis_snapshot: &FileSnapshot,
-) -> (Option<RawMetadataRecord>, Vec<MetadataField>) {
+) -> (Option<RawMetadataRecord>, Vec<MetadataField>, Vec<Finding>) {
     file.status = EvidenceStatus::Analyzing;
 
     match extractor.extract_raw_metadata(path) {
@@ -258,14 +265,14 @@ fn analyze_imported_file(
                         "File changed during ExifTool analysis. Re-import the file when it is stable."
                             .to_string(),
                     );
-                    return (None, Vec::new());
+                    return (None, Vec::new(), Vec::new());
                 }
                 Err(error) => {
                     file.status = EvidenceStatus::Error;
                     file.analyzed_at = Some(now_iso());
                     file.sha256 = None;
                     file.error_message = Some(error);
-                    return (None, Vec::new());
+                    return (None, Vec::new(), Vec::new());
                 }
             }
 
@@ -275,6 +282,7 @@ fn analyze_imported_file(
             file.error_message = None;
             let mut metadata_fields = normalize_metadata(&file.id, "exiftool", &data);
             append_internal_identity_fields(file, &mut metadata_fields);
+            let findings = generate_findings(file, &metadata_fields, &extracted_at);
 
             (
                 Some(RawMetadataRecord {
@@ -284,13 +292,14 @@ fn analyze_imported_file(
                     data,
                 }),
                 metadata_fields,
+                findings,
             )
         }
         Err(error) => {
             file.status = EvidenceStatus::Error;
             file.analyzed_at = Some(now_iso());
             file.error_message = Some(error);
-            (None, Vec::new())
+            (None, Vec::new(), Vec::new())
         }
     }
 }
@@ -358,6 +367,7 @@ struct ImportRecord {
     file: EvidenceFile,
     raw_metadata: Option<RawMetadataRecord>,
     metadata_fields: Vec<MetadataField>,
+    findings: Vec<Finding>,
 }
 
 fn display_path_name(path: &str) -> String {
@@ -462,6 +472,15 @@ mod tests {
                 && field.value == "PDF"
                 && field.source == "internal"
                 && field.normalized_category.as_deref() == Some("technical")
+        }));
+        let findings = fixture
+            .repository
+            .get_file_findings(&imported[0].id)
+            .expect("findings should load");
+        assert!(findings.iter().any(|finding| {
+            finding.file_id == imported[0].id
+                && finding.category == "timeline"
+                && finding.title == "No embedded timestamp metadata found"
         }));
     }
 
@@ -659,6 +678,14 @@ mod tests {
         assert_eq!(persisted.len(), 1);
         assert_eq!(persisted[0].size_bytes, 14);
         assert_eq!(persisted[0].sha256, second[0].sha256);
+        assert_eq!(
+            fixture
+                .repository
+                .get_file_findings(&second[0].id)
+                .expect("findings should load")
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -718,6 +745,11 @@ mod tests {
             .expect("metadata lookup should succeed")
             .iter()
             .any(|field| field.file_id == first[0].id));
+        assert!(!fixture
+            .repository
+            .get_file_findings(&first[0].id)
+            .expect("findings lookup should succeed")
+            .is_empty());
 
         let second = import_with_failure(&fixture.repository, "case-1".to_string(), vec![path])
             .expect("second import should keep file record")
@@ -736,6 +768,11 @@ mod tests {
             .expect("metadata lookup should succeed")
             .iter()
             .any(|field| field.file_id == second[0].id));
+        assert!(fixture
+            .repository
+            .get_file_findings(&second[0].id)
+            .expect("findings lookup should succeed")
+            .is_empty());
     }
 
     #[test]
@@ -779,6 +816,15 @@ mod tests {
         assert!(metadata_fields.iter().any(|field| {
             field.file_id == imported[0].id
                 && field.normalized_category.as_deref() == Some("technical")
+        }));
+        let findings = fixture
+            .repository
+            .get_file_findings(&imported[0].id)
+            .expect("findings should load");
+        assert!(findings.iter().any(|finding| {
+            finding.category == "location"
+                && finding.severity == "high"
+                && finding.confidence == "high"
         }));
     }
 
@@ -847,6 +893,22 @@ mod tests {
                 && field.value == "image/png"
                 && field.normalized_category.as_deref() == Some("technical")
         }));
+        let findings = fixture
+            .repository
+            .get_file_findings(&imported[0].id)
+            .expect("findings should load");
+        assert!(findings.iter().any(|finding| {
+            finding.category == "integrity"
+                && finding.severity == "high"
+                && finding.confidence == "high"
+        }));
+        let dashboard = fixture
+            .repository
+            .list_case_dashboard()
+            .expect("dashboard should load")
+            .remove(0);
+        assert!(dashboard.finding_count >= 1);
+        assert!(dashboard.high_count >= 1);
     }
 
     #[test]
@@ -884,6 +946,11 @@ mod tests {
             .expect("metadata lookup should succeed")
             .iter()
             .any(|field| field.file_id == imported[0].id));
+        assert!(fixture
+            .repository
+            .get_file_findings(&imported[0].id)
+            .expect("findings lookup should succeed")
+            .is_empty());
     }
 
     #[test]

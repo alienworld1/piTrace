@@ -1,4 +1,5 @@
 mod commands;
+mod findings_engine;
 mod hashing;
 mod importer;
 mod metadata_extractor;
