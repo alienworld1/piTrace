@@ -2,6 +2,22 @@ use crate::models::{EvidenceFile, EvidenceStatus, Finding, MetadataField};
 use chrono::{DateTime, NaiveDateTime};
 use uuid::Uuid;
 
+const CATEGORY_IDENTITY: &str = "identity";
+const CATEGORY_INTEGRITY: &str = "integrity";
+const CATEGORY_LOCATION: &str = "location";
+const CATEGORY_PRIVACY: &str = "privacy";
+const CATEGORY_SOFTWARE: &str = "software";
+const CATEGORY_TIMELINE: &str = "timeline";
+
+const SEVERITY_HIGH: &str = "high";
+const SEVERITY_MEDIUM: &str = "medium";
+const SEVERITY_LOW: &str = "low";
+
+const CONFIDENCE_HIGH: &str = "high";
+const CONFIDENCE_MEDIUM: &str = "medium";
+
+const LARGE_TIMESTAMP_SEPARATION_SECONDS: i64 = 30 * 24 * 60 * 60;
+
 pub fn generate_findings(
     file: &EvidenceFile,
     fields: &[MetadataField],
@@ -11,160 +27,407 @@ pub fn generate_findings(
         return Vec::new();
     }
 
+    let analysis = FieldAnalysis::from_fields(fields);
     let mut findings = Vec::new();
-    push_category_finding(
-        &mut findings,
-        file,
-        fields,
-        created_at,
-        CategoryRule {
-            category: "location",
-            title: "Location metadata found",
-            description: "GPS or location metadata was found in this file. These fields may reveal where the file was captured, edited, or described.",
-            severity: "high",
-            confidence: "high",
-        },
-    );
-    push_category_finding(
-        &mut findings,
-        file,
-        fields,
-        created_at,
-        CategoryRule {
-            category: "identity",
-            title: "Identity metadata found",
-            description: "Author, owner, company, or creator metadata was found in this file. These fields may reveal personal or organizational context.",
-            severity: "medium",
-            confidence: "high",
-        },
-    );
-    push_category_finding(
-        &mut findings,
-        file,
-        fields,
-        created_at,
-        CategoryRule {
-            category: "software",
-            title: "Software or device metadata found",
-            description: "Software, encoder, producer, or device metadata was found in this file. These fields may reveal workflow, tooling, or device context.",
-            severity: "medium",
-            confidence: "high",
-        },
-    );
-    push_timestamp_findings(&mut findings, file, fields, created_at);
-    push_extension_mismatch_finding(&mut findings, file, fields, created_at);
+
+    push_gps_finding(&mut findings, file, &analysis, created_at);
+    push_identity_finding(&mut findings, file, &analysis, created_at);
+    push_software_finding(&mut findings, file, &analysis, created_at);
+    push_timestamp_findings(&mut findings, file, &analysis, created_at);
+    push_extension_mismatch_finding(&mut findings, file, &analysis, created_at);
+    push_privacy_finding(&mut findings, file, &analysis, created_at);
 
     findings
 }
 
-struct CategoryRule {
-    category: &'static str,
-    title: &'static str,
-    description: &'static str,
-    severity: &'static str,
-    confidence: &'static str,
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TimestampRole {
+    Creation,
+    Modification,
+    Other,
 }
 
-fn push_category_finding(
+struct TimestampField {
+    id: String,
+    timestamp: Option<i64>,
+    role: TimestampRole,
+}
+
+struct FindingInput {
+    category: &'static str,
+    title: &'static str,
+    description: String,
+    severity: &'static str,
+    confidence: &'static str,
+    related_field_ids: Vec<String>,
+}
+
+#[derive(Default)]
+struct FieldAnalysis {
+    gps_latitude_ids: Vec<String>,
+    gps_longitude_ids: Vec<String>,
+    gps_position_ids: Vec<String>,
+    identity_direct_ids: Vec<String>,
+    identity_organization_ids: Vec<String>,
+    software_tool_ids: Vec<String>,
+    device_ids: Vec<String>,
+    serial_ids: Vec<String>,
+    timeline_fields: Vec<TimestampField>,
+    detected_type_ids: Vec<String>,
+}
+
+impl FieldAnalysis {
+    fn from_fields(fields: &[MetadataField]) -> Self {
+        let mut analysis = Self::default();
+
+        for field in fields {
+            let normalized_key = normalize_tag(&field.key);
+            let normalized_group = normalize_tag(&field.group);
+            let category = field.normalized_category.as_deref();
+
+            match category {
+                Some(CATEGORY_LOCATION) => {
+                    if normalized_key == "gpslatitude" {
+                        analysis.gps_latitude_ids.push(field.id.clone());
+                    } else if normalized_key == "gpslongitude" {
+                        analysis.gps_longitude_ids.push(field.id.clone());
+                    } else if normalized_key == "gpsposition" {
+                        analysis.gps_position_ids.push(field.id.clone());
+                    }
+                }
+                Some(CATEGORY_IDENTITY) => {
+                    if is_organization_identity_field(&normalized_key) {
+                        analysis.identity_organization_ids.push(field.id.clone());
+                    } else {
+                        analysis.identity_direct_ids.push(field.id.clone());
+                    }
+                }
+                Some(CATEGORY_SOFTWARE) => {
+                    if is_device_field(&normalized_key) {
+                        analysis.device_ids.push(field.id.clone());
+                    } else {
+                        analysis.software_tool_ids.push(field.id.clone());
+                    }
+                }
+                Some(CATEGORY_TIMELINE) => analysis.timeline_fields.push(TimestampField {
+                    id: field.id.clone(),
+                    timestamp: parse_metadata_timestamp(&field.value),
+                    role: timestamp_role(&normalized_key),
+                }),
+                Some("technical") if is_serial_field(&normalized_key) => {
+                    analysis.serial_ids.push(field.id.clone());
+                }
+                _ => {}
+            }
+
+            if field.source == "internal"
+                && normalized_group == "pitrace"
+                && matches!(
+                    normalized_key.as_str(),
+                    "detectedfiletype" | "detectedmimetype"
+                )
+            {
+                analysis.detected_type_ids.push(field.id.clone());
+            }
+        }
+
+        analysis.deduplicate();
+        analysis
+    }
+
+    fn deduplicate(&mut self) {
+        dedup_ids(&mut self.gps_latitude_ids);
+        dedup_ids(&mut self.gps_longitude_ids);
+        dedup_ids(&mut self.gps_position_ids);
+        dedup_ids(&mut self.identity_direct_ids);
+        dedup_ids(&mut self.identity_organization_ids);
+        dedup_ids(&mut self.software_tool_ids);
+        dedup_ids(&mut self.device_ids);
+        dedup_ids(&mut self.serial_ids);
+        dedup_ids(&mut self.detected_type_ids);
+    }
+
+    fn gps_coordinate_ids(&self) -> Vec<String> {
+        if !self.gps_position_ids.is_empty() {
+            return self.gps_position_ids.clone();
+        }
+
+        if self.gps_latitude_ids.is_empty() || self.gps_longitude_ids.is_empty() {
+            return Vec::new();
+        }
+
+        let mut ids = Vec::new();
+        ids.extend(self.gps_latitude_ids.clone());
+        ids.extend(self.gps_longitude_ids.clone());
+        dedup_ids(&mut ids);
+        ids
+    }
+
+    fn identity_ids(&self) -> Vec<String> {
+        merge_ids(&[&self.identity_direct_ids, &self.identity_organization_ids])
+    }
+
+    fn privacy_field_ids(&self) -> Vec<String> {
+        merge_ids(&[
+            &self.gps_coordinate_ids(),
+            &self.identity_direct_ids,
+            &self.identity_organization_ids,
+            &self.device_ids,
+            &self.serial_ids,
+            &self.software_tool_ids,
+        ])
+    }
+}
+
+fn push_gps_finding(
     findings: &mut Vec<Finding>,
     file: &EvidenceFile,
-    fields: &[MetadataField],
+    analysis: &FieldAnalysis,
     created_at: &str,
-    rule: CategoryRule,
 ) {
-    let related_field_ids = fields
-        .iter()
-        .filter(|field| field.normalized_category.as_deref() == Some(rule.category))
-        .map(|field| field.id.clone())
-        .collect::<Vec<_>>();
-
+    let related_field_ids = analysis.gps_coordinate_ids();
     if related_field_ids.is_empty() {
         return;
     }
 
     findings.push(finding(
         file,
-        rule.category,
-        rule.title,
-        rule.description,
-        rule.severity,
-        rule.confidence,
-        related_field_ids,
         created_at,
+        FindingInput {
+            category: CATEGORY_LOCATION,
+            title: "GPS coordinates found",
+            description: "This file contains embedded GPS coordinates. This may reveal where the file was captured or created.".to_string(),
+            severity: SEVERITY_HIGH,
+            confidence: CONFIDENCE_HIGH,
+            related_field_ids,
+        },
+    ));
+}
+
+fn push_identity_finding(
+    findings: &mut Vec<Finding>,
+    file: &EvidenceFile,
+    analysis: &FieldAnalysis,
+    created_at: &str,
+) {
+    let related_field_ids = analysis.identity_ids();
+    if related_field_ids.is_empty() {
+        return;
+    }
+
+    let confidence = if analysis.identity_direct_ids.is_empty() {
+        CONFIDENCE_MEDIUM
+    } else {
+        CONFIDENCE_HIGH
+    };
+
+    findings.push(finding(
+        file,
+        created_at,
+        FindingInput {
+            category: CATEGORY_IDENTITY,
+            title: "Possible user identity metadata found",
+            description: "This file contains author, user, owner, company, or creator metadata that may identify a person, device user, or organization.".to_string(),
+            severity: SEVERITY_MEDIUM,
+            confidence,
+            related_field_ids,
+        },
+    ));
+}
+
+fn push_software_finding(
+    findings: &mut Vec<Finding>,
+    file: &EvidenceFile,
+    analysis: &FieldAnalysis,
+    created_at: &str,
+) {
+    let related_field_ids = merge_ids(&[&analysis.software_tool_ids, &analysis.device_ids]);
+    if related_field_ids.is_empty() {
+        return;
+    }
+
+    findings.push(finding(
+        file,
+        created_at,
+        FindingInput {
+            category: CATEGORY_SOFTWARE,
+            title: "Software or editing tool detected",
+            description: "Metadata indicates that this file was created, processed, encoded, or edited using the listed software or device information.".to_string(),
+            severity: SEVERITY_LOW,
+            confidence: CONFIDENCE_HIGH,
+            related_field_ids,
+        },
     ));
 }
 
 fn push_timestamp_findings(
     findings: &mut Vec<Finding>,
     file: &EvidenceFile,
-    fields: &[MetadataField],
+    analysis: &FieldAnalysis,
     created_at: &str,
 ) {
-    let timeline_fields = fields
-        .iter()
-        .filter(|field| field.normalized_category.as_deref() == Some("timeline"))
-        .collect::<Vec<_>>();
-
-    if timeline_fields.is_empty() {
+    if analysis.timeline_fields.is_empty() {
         findings.push(finding(
             file,
-            "timeline",
-            "No embedded timestamp metadata found",
-            "No normalized timestamp metadata was found in this file. This may limit timeline analysis for the evidence item.",
-            "low",
-            "medium",
-            Vec::new(),
             created_at,
+            FindingInput {
+                category: CATEGORY_TIMELINE,
+                title: "No embedded timestamp metadata found",
+                description: "No normalized timestamp metadata was found in this file. This may limit timeline analysis for the evidence item.".to_string(),
+                severity: SEVERITY_LOW,
+                confidence: CONFIDENCE_MEDIUM,
+                related_field_ids: Vec::new(),
+            },
         ));
         return;
     }
 
-    let mut parsed_creation_times = Vec::new();
-    let mut parsed_modification_times = Vec::new();
-    let mut unparsable_field_ids = Vec::new();
-
-    for field in timeline_fields {
-        match parse_metadata_timestamp(&field.value) {
-            Some(timestamp) => {
-                let normalized_key = normalize_tag(&field.key);
-                if is_creation_timestamp(&normalized_key) {
-                    parsed_creation_times.push((field.id.clone(), timestamp));
-                }
-                if is_modification_timestamp(&normalized_key) {
-                    parsed_modification_times.push((field.id.clone(), timestamp));
-                }
-            }
-            None => unparsable_field_ids.push(field.id.clone()),
-        }
-    }
-
+    let unparsable_field_ids = analysis
+        .timeline_fields
+        .iter()
+        .filter(|field| field.timestamp.is_none())
+        .map(|field| field.id.clone())
+        .collect::<Vec<_>>();
     if !unparsable_field_ids.is_empty() {
         findings.push(finding(
             file,
-            "timeline",
-            "Timestamp metadata could not be parsed",
-            "One or more timestamp fields could not be parsed into a standard date. Review the raw metadata before relying on this file for timeline analysis.",
-            "low",
-            "medium",
-            unparsable_field_ids,
             created_at,
+            FindingInput {
+                category: CATEGORY_TIMELINE,
+                title: "Timestamp metadata could not be parsed",
+                description: "One or more timestamp fields could not be parsed into a standard date. Review the raw metadata before relying on this file for timeline analysis.".to_string(),
+                severity: SEVERITY_LOW,
+                confidence: CONFIDENCE_MEDIUM,
+                related_field_ids: unparsable_field_ids,
+            },
         ));
     }
 
-    if let Some(conflicting_ids) =
-        timestamp_order_conflict(&parsed_creation_times, &parsed_modification_times)
-    {
+    if let Some(conflicting_ids) = timestamp_order_conflict(&analysis.timeline_fields) {
         findings.push(finding(
             file,
-            "timeline",
-            "Timestamp ordering conflict found",
-            "A creation or capture timestamp appears later than a modification timestamp. This may indicate a timeline inconsistency that should be reviewed.",
-            "medium",
-            "high",
-            conflicting_ids,
             created_at,
+            FindingInput {
+                category: CATEGORY_TIMELINE,
+                title: "Potential timestamp inconsistency",
+                description: "Some metadata timestamps appear inconsistent or unusually separated. This may be normal, but review is recommended.".to_string(),
+                severity: SEVERITY_MEDIUM,
+                confidence: CONFIDENCE_MEDIUM,
+                related_field_ids: conflicting_ids,
+            },
         ));
     }
+}
+
+fn push_extension_mismatch_finding(
+    findings: &mut Vec<Finding>,
+    file: &EvidenceFile,
+    analysis: &FieldAnalysis,
+    created_at: &str,
+) {
+    let Some(expected_extensions) = expected_extensions(file) else {
+        return;
+    };
+
+    if expected_extensions
+        .iter()
+        .any(|extension| extension.eq_ignore_ascii_case(&file.extension))
+    {
+        return;
+    }
+
+    findings.push(finding(
+        file,
+        created_at,
+        FindingInput {
+            category: CATEGORY_INTEGRITY,
+            title: "File extension does not match detected type",
+            description: "The declared file extension differs from the detected file type. This may indicate renaming, conversion, or an intentionally misleading extension.".to_string(),
+            severity: SEVERITY_HIGH,
+            confidence: CONFIDENCE_HIGH,
+            related_field_ids: analysis.detected_type_ids.clone(),
+        },
+    ));
+}
+
+fn push_privacy_finding(
+    findings: &mut Vec<Finding>,
+    file: &EvidenceFile,
+    analysis: &FieldAnalysis,
+    created_at: &str,
+) {
+    let score = privacy_score(findings, analysis);
+    if score == 0 {
+        return;
+    }
+
+    let severity = match score {
+        0..=20 => SEVERITY_LOW,
+        21..=50 => SEVERITY_MEDIUM,
+        _ => SEVERITY_HIGH,
+    };
+    let mut related_field_ids = analysis.privacy_field_ids();
+    for finding in findings.iter() {
+        if matches!(
+            finding.category.as_str(),
+            CATEGORY_LOCATION | CATEGORY_TIMELINE | CATEGORY_INTEGRITY
+        ) {
+            related_field_ids.extend(finding.related_field_ids.clone());
+        }
+    }
+    dedup_ids(&mut related_field_ids);
+
+    findings.push(finding(
+        file,
+        created_at,
+        FindingInput {
+            category: CATEGORY_PRIVACY,
+            title: "Metadata privacy exposure detected",
+            description: format!(
+                "This file contains metadata that may reveal personal, location, device, organization, or software information. Privacy exposure score: {score}. This score is a triage aid only and is not a legal or definitive risk score."
+            ),
+            severity,
+            confidence: CONFIDENCE_MEDIUM,
+            related_field_ids,
+        },
+    ));
+}
+
+fn privacy_score(findings: &[Finding], analysis: &FieldAnalysis) -> u32 {
+    let mut score = 0;
+
+    if findings
+        .iter()
+        .any(|finding| finding.category == CATEGORY_LOCATION)
+    {
+        score += 40;
+    }
+    if !analysis.identity_direct_ids.is_empty() {
+        score += 20;
+    }
+    if !analysis.identity_organization_ids.is_empty() {
+        score += 15;
+    }
+    if !analysis.device_ids.is_empty() || !analysis.serial_ids.is_empty() {
+        score += 15;
+    }
+    if !analysis.software_tool_ids.is_empty() {
+        score += 10;
+    }
+    if findings
+        .iter()
+        .any(|finding| finding.category == CATEGORY_TIMELINE && finding.severity == SEVERITY_MEDIUM)
+    {
+        score += 10;
+    }
+    if findings
+        .iter()
+        .any(|finding| finding.category == CATEGORY_INTEGRITY)
+    {
+        score += 10;
+    }
+
+    score
 }
 
 fn parse_metadata_timestamp(value: &str) -> Option<i64> {
@@ -218,19 +481,45 @@ fn exiftool_timestamp_candidates(value: &str) -> Vec<String> {
     candidates
 }
 
-fn timestamp_order_conflict(
-    creation_times: &[(String, i64)],
-    modification_times: &[(String, i64)],
-) -> Option<Vec<String>> {
-    for (creation_id, creation_time) in creation_times {
-        for (modification_id, modification_time) in modification_times {
+fn timestamp_order_conflict(fields: &[TimestampField]) -> Option<Vec<String>> {
+    let creation_times = fields
+        .iter()
+        .filter(|field| field.role == TimestampRole::Creation)
+        .filter_map(|field| field.timestamp.map(|timestamp| (&field.id, timestamp)))
+        .collect::<Vec<_>>();
+    let modification_times = fields
+        .iter()
+        .filter(|field| field.role == TimestampRole::Modification)
+        .filter_map(|field| field.timestamp.map(|timestamp| (&field.id, timestamp)))
+        .collect::<Vec<_>>();
+
+    for (creation_id, creation_time) in &creation_times {
+        for (modification_id, modification_time) in &modification_times {
             if creation_time > modification_time {
-                return Some(vec![creation_id.clone(), modification_id.clone()]);
+                return Some(vec![(*creation_id).clone(), (*modification_id).clone()]);
+            }
+        }
+    }
+
+    for (creation_id, creation_time) in creation_times {
+        for (modification_id, modification_time) in &modification_times {
+            if modification_time - creation_time > LARGE_TIMESTAMP_SEPARATION_SECONDS {
+                return Some(vec![creation_id.clone(), (*modification_id).clone()]);
             }
         }
     }
 
     None
+}
+
+fn timestamp_role(key: &str) -> TimestampRole {
+    if is_creation_timestamp(key) {
+        TimestampRole::Creation
+    } else if is_modification_timestamp(key) {
+        TimestampRole::Modification
+    } else {
+        TimestampRole::Other
+    }
 }
 
 fn is_creation_timestamp(key: &str) -> bool {
@@ -244,43 +533,22 @@ fn is_modification_timestamp(key: &str) -> bool {
     matches!(key, "modifydate" | "filemodifydate" | "metadatadate")
 }
 
-fn push_extension_mismatch_finding(
-    findings: &mut Vec<Finding>,
-    file: &EvidenceFile,
-    fields: &[MetadataField],
-    created_at: &str,
-) {
-    let Some(expected_extensions) = expected_extensions(file) else {
-        return;
-    };
+fn is_organization_identity_field(key: &str) -> bool {
+    matches!(key, "company" | "organization")
+}
 
-    if expected_extensions
-        .iter()
-        .any(|extension| extension.eq_ignore_ascii_case(&file.extension))
-    {
-        return;
-    }
+fn is_device_field(key: &str) -> bool {
+    matches!(
+        key,
+        "make" | "model" | "devicemanufacturer" | "devicemodelname"
+    )
+}
 
-    let related_field_ids = fields
-        .iter()
-        .filter(|field| {
-            field.source == "internal"
-                && field.group == "piTrace"
-                && matches!(field.key.as_str(), "DetectedFileType" | "DetectedMIMEType")
-        })
-        .map(|field| field.id.clone())
-        .collect();
-
-    findings.push(finding(
-        file,
-        "integrity",
-        "File extension does not match detected type",
-        "The file extension does not match the detected content type. This may indicate a renamed file or a misleading extension.",
-        "high",
-        "high",
-        related_field_ids,
-        created_at,
-    ));
+fn is_serial_field(key: &str) -> bool {
+    matches!(
+        key,
+        "serialnumber" | "bodyserialnumber" | "cameraserialnumber" | "lensserialnumber"
+    )
 }
 
 fn expected_extensions(file: &EvidenceFile) -> Option<&'static [&'static str]> {
@@ -337,27 +605,37 @@ fn expected_extensions_for_mime_type(mime_type: &str) -> Option<&'static [&'stat
     }
 }
 
-fn finding(
-    file: &EvidenceFile,
-    category: &str,
-    title: &str,
-    description: &str,
-    severity: &str,
-    confidence: &str,
-    related_field_ids: Vec<String>,
-    created_at: &str,
-) -> Finding {
+fn finding(file: &EvidenceFile, created_at: &str, input: FindingInput) -> Finding {
     Finding {
         id: format!("finding-{}", Uuid::new_v4()),
         file_id: file.id.clone(),
-        category: category.to_string(),
-        title: title.to_string(),
-        description: description.to_string(),
-        severity: severity.to_string(),
-        confidence: confidence.to_string(),
-        related_field_ids,
+        category: input.category.to_string(),
+        title: input.title.to_string(),
+        description: input.description,
+        severity: input.severity.to_string(),
+        confidence: input.confidence.to_string(),
+        related_field_ids: input.related_field_ids,
         created_at: created_at.to_string(),
     }
+}
+
+fn merge_ids(groups: &[&Vec<String>]) -> Vec<String> {
+    let mut ids = groups
+        .iter()
+        .flat_map(|group| group.iter().cloned())
+        .collect::<Vec<_>>();
+    dedup_ids(&mut ids);
+    ids
+}
+
+fn dedup_ids(ids: &mut Vec<String>) {
+    let mut unique = Vec::new();
+    for id in ids.drain(..) {
+        if !unique.contains(&id) {
+            unique.push(id);
+        }
+    }
+    *ids = unique;
 }
 
 fn normalize_tag(value: &str) -> String {
@@ -374,43 +652,97 @@ mod tests {
     use crate::models::{EvidenceFile, EvidenceStatus, MetadataField};
 
     #[test]
-    fn location_fields_generate_high_confidence_gps_finding() {
+    fn gps_finding_requires_latitude_and_longitude() {
         let file = complete_file("jpg", Some("JPEG"), Some("image/jpeg"));
-        let fields = vec![field("field-gps", "GPS", "GPSLatitude", "location", "1.23")];
+        let only_latitude = vec![field("field-lat", "GPS", "GPSLatitude", "location", "1.23")];
+
+        let findings = generate_findings(&file, &only_latitude, "2026-01-01T00:00:00Z");
+        assert!(!findings.iter().any(|finding| {
+            finding.category == "location" && finding.title == "GPS coordinates found"
+        }));
+
+        let coordinates = vec![
+            field("field-lat", "GPS", "GPSLatitude", "location", "1.23"),
+            field("field-lon", "GPS", "GPSLongitude", "location", "4.56"),
+        ];
+        let findings = generate_findings(&file, &coordinates, "2026-01-01T00:00:00Z");
+
+        assert!(findings.iter().any(|finding| {
+            finding.category == "location"
+                && finding.title == "GPS coordinates found"
+                && finding.severity == "high"
+                && finding.confidence == "high"
+                && finding.related_field_ids == vec!["field-lat", "field-lon"]
+        }));
+    }
+
+    #[test]
+    fn composite_gps_position_generates_gps_finding() {
+        let file = complete_file("jpg", Some("JPEG"), Some("image/jpeg"));
+        let fields = vec![field(
+            "field-position",
+            "Composite",
+            "GPSPosition",
+            "location",
+            "1.23 4.56",
+        )];
 
         let findings = generate_findings(&file, &fields, "2026-01-01T00:00:00Z");
 
         assert!(findings.iter().any(|finding| {
             finding.category == "location"
-                && finding.severity == "high"
-                && finding.confidence == "high"
-                && finding.related_field_ids == vec!["field-gps"]
+                && finding.title == "GPS coordinates found"
+                && finding.related_field_ids == vec!["field-position"]
         }));
     }
 
     #[test]
-    fn identity_fields_generate_author_finding() {
+    fn city_location_does_not_generate_gps_finding() {
+        let file = complete_file("jpg", Some("JPEG"), Some("image/jpeg"));
+        let fields = vec![field("field-city", "XMP", "City", "location", "Pune")];
+
+        let findings = generate_findings(&file, &fields, "2026-01-01T00:00:00Z");
+
+        assert!(!findings.iter().any(|finding| {
+            finding.category == "location" && finding.title == "GPS coordinates found"
+        }));
+    }
+
+    #[test]
+    fn identity_confidence_tracks_direct_and_organization_fields() {
         let file = complete_file("pdf", Some("PDF"), Some("application/pdf"));
-        let fields = vec![field(
+        let organization = vec![field(
+            "field-company",
+            "PDF",
+            "Company",
+            "identity",
+            "Example Org",
+        )];
+        let findings = generate_findings(&file, &organization, "2026-01-01T00:00:00Z");
+        assert!(findings.iter().any(|finding| {
+            finding.category == "identity"
+                && finding.title == "Possible user identity metadata found"
+                && finding.confidence == "medium"
+                && finding.related_field_ids == vec!["field-company"]
+        }));
+
+        let direct = vec![field(
             "field-author",
             "PDF",
             "Author",
             "identity",
             "Analyst",
         )];
-
-        let findings = generate_findings(&file, &fields, "2026-01-01T00:00:00Z");
-
+        let findings = generate_findings(&file, &direct, "2026-01-01T00:00:00Z");
         assert!(findings.iter().any(|finding| {
             finding.category == "identity"
-                && finding.severity == "medium"
                 && finding.confidence == "high"
                 && finding.related_field_ids == vec!["field-author"]
         }));
     }
 
     #[test]
-    fn software_fields_generate_workflow_finding() {
+    fn software_fields_generate_low_severity_finding() {
         let file = complete_file("pdf", Some("PDF"), Some("application/pdf"));
         let fields = vec![field(
             "field-producer",
@@ -424,7 +756,8 @@ mod tests {
 
         assert!(findings.iter().any(|finding| {
             finding.category == "software"
-                && finding.severity == "medium"
+                && finding.title == "Software or editing tool detected"
+                && finding.severity == "low"
                 && finding.confidence == "high"
                 && finding.related_field_ids == vec!["field-producer"]
         }));
@@ -489,10 +822,39 @@ mod tests {
 
         assert!(findings.iter().any(|finding| {
             finding.category == "timeline"
-                && finding.title == "Timestamp ordering conflict found"
+                && finding.title == "Potential timestamp inconsistency"
                 && finding.severity == "medium"
-                && finding.confidence == "high"
+                && finding.confidence == "medium"
                 && finding.related_field_ids == vec!["field-created", "field-modified"]
+        }));
+    }
+
+    #[test]
+    fn large_timestamp_separation_generates_conflict_finding() {
+        let file = complete_file("pdf", Some("PDF"), Some("application/pdf"));
+        let fields = vec![
+            field(
+                "field-original",
+                "EXIF",
+                "DateTimeOriginal",
+                "timeline",
+                "2026:01:01 12:00:00",
+            ),
+            field(
+                "field-modified",
+                "PDF",
+                "ModifyDate",
+                "timeline",
+                "2026:02:15 12:00:00",
+            ),
+        ];
+
+        let findings = generate_findings(&file, &fields, "2026-01-01T00:00:00Z");
+
+        assert!(findings.iter().any(|finding| {
+            finding.category == "timeline"
+                && finding.title == "Potential timestamp inconsistency"
+                && finding.related_field_ids == vec!["field-original", "field-modified"]
         }));
     }
 
@@ -522,6 +884,73 @@ mod tests {
                 && finding.severity == "high"
                 && finding.confidence == "high"
                 && finding.related_field_ids == vec!["field-type", "field-mime"]
+        }));
+        assert!(findings.iter().any(|finding| {
+            finding.category == "privacy"
+                && finding.severity == "low"
+                && finding.description.contains("Privacy exposure score: 10")
+        }));
+    }
+
+    #[test]
+    fn privacy_score_generates_low_medium_and_high_bands() {
+        let file = complete_file("pdf", Some("PDF"), Some("application/pdf"));
+        let low_fields = vec![field(
+            "field-producer",
+            "PDF",
+            "Producer",
+            "software",
+            "PDF Engine",
+        )];
+        let low = generate_findings(&file, &low_fields, "2026-01-01T00:00:00Z");
+        assert!(low.iter().any(|finding| {
+            finding.category == "privacy"
+                && finding.severity == "low"
+                && finding.description.contains("Privacy exposure score: 10")
+        }));
+
+        let medium_fields = vec![
+            field("field-lat", "GPS", "GPSLatitude", "location", "1.23"),
+            field("field-lon", "GPS", "GPSLongitude", "location", "4.56"),
+        ];
+        let medium = generate_findings(&file, &medium_fields, "2026-01-01T00:00:00Z");
+        assert!(medium.iter().any(|finding| {
+            finding.category == "privacy"
+                && finding.severity == "medium"
+                && finding.description.contains("Privacy exposure score: 40")
+        }));
+
+        let high_fields = vec![
+            field("field-lat", "GPS", "GPSLatitude", "location", "1.23"),
+            field("field-lon", "GPS", "GPSLongitude", "location", "4.56"),
+            field("field-author", "PDF", "Author", "identity", "Analyst"),
+        ];
+        let high = generate_findings(&file, &high_fields, "2026-01-01T00:00:00Z");
+        assert!(high.iter().any(|finding| {
+            finding.category == "privacy"
+                && finding.severity == "high"
+                && finding.description.contains("Privacy exposure score: 60")
+        }));
+    }
+
+    #[test]
+    fn serial_fields_contribute_to_privacy_score() {
+        let file = complete_file("jpg", Some("JPEG"), Some("image/jpeg"));
+        let fields = vec![field(
+            "field-serial",
+            "EXIF",
+            "SerialNumber",
+            "technical",
+            "12345",
+        )];
+
+        let findings = generate_findings(&file, &fields, "2026-01-01T00:00:00Z");
+
+        assert!(findings.iter().any(|finding| {
+            finding.category == "privacy"
+                && finding.severity == "low"
+                && finding.related_field_ids == vec!["field-serial"]
+                && finding.description.contains("Privacy exposure score: 15")
         }));
     }
 
