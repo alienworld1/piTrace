@@ -1,6 +1,6 @@
 use crate::models::{
-    CaseDashboardItem, CaseInput, CaseRecord, CaseReport, EvidenceFile, EvidenceStatus, Finding,
-    MetadataField, RawMetadataRecord,
+    CaseDashboardItem, CaseInput, CaseRecord, CaseReport, EvidenceFile, EvidenceStatus,
+    FileMetadataGroup, Finding, MetadataField, RawMetadataRecord,
 };
 use chrono::Utc;
 use rusqlite::{params, types::Type, Connection, OptionalExtension, Row, Transaction};
@@ -237,6 +237,49 @@ impl Repository {
             .map_err(storage_error)
     }
 
+    pub fn get_case_metadata(&self, case_id: &str) -> Result<Vec<FileMetadataGroup>, String> {
+        let connection = self.connect()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT metadata_fields.id, metadata_fields.file_id,
+                        metadata_fields.field_group, metadata_fields.field_key,
+                        metadata_fields.display_label, metadata_fields.value,
+                        metadata_fields.source, metadata_fields.normalized_category
+                 FROM metadata_fields
+                 INNER JOIN evidence_files ON evidence_files.id = metadata_fields.file_id
+                 WHERE evidence_files.case_id = ?1
+                 ORDER BY evidence_files.imported_at ASC, metadata_fields.rowid ASC",
+            )
+            .map_err(storage_error)?;
+        let rows = statement
+            .query_map(params![case_id], metadata_field_from_row)
+            .map_err(storage_error)?;
+        let fields = rows
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(storage_error)?;
+
+        Ok(group_metadata_fields(fields))
+    }
+
+    pub fn get_case_raw_metadata(&self, case_id: &str) -> Result<Vec<RawMetadataRecord>, String> {
+        let connection = self.connect()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT raw_metadata.file_id, raw_metadata.source, raw_metadata.extracted_at,
+                        raw_metadata.data_json
+                 FROM raw_metadata
+                 INNER JOIN evidence_files ON evidence_files.id = raw_metadata.file_id
+                 WHERE evidence_files.case_id = ?1
+                 ORDER BY evidence_files.imported_at ASC",
+            )
+            .map_err(storage_error)?;
+        let rows = statement
+            .query_map(params![case_id], raw_metadata_from_row)
+            .map_err(storage_error)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(storage_error)
+    }
+
     pub fn delete_case(&self, case_id: &str) -> Result<CaseRecord, String> {
         let mut connection = self.connect()?;
         let transaction = connection.transaction().map_err(storage_error)?;
@@ -388,6 +431,21 @@ impl Repository {
             .map_err(storage_error)
     }
 
+    pub fn get_report(&self, report_id: &str) -> Result<CaseReport, String> {
+        let connection = self.connect()?;
+        connection
+            .query_row(
+                "SELECT id, case_id, generated_at, format, include_raw_metadata, output_path
+                 FROM reports
+                 WHERE id = ?1",
+                params![report_id],
+                case_report_from_row,
+            )
+            .optional()
+            .map_err(storage_error)?
+            .ok_or_else(|| "Report not found".to_string())
+    }
+
     pub fn replace_imported_files_with_metadata(
         &self,
         case_id: &str,
@@ -506,8 +564,7 @@ impl Repository {
         Ok(())
     }
 
-    #[cfg(test)]
-    fn insert_report(&self, report: &CaseReport) -> Result<(), String> {
+    pub fn insert_report(&self, report: &CaseReport) -> Result<(), String> {
         let connection = self.connect()?;
         connection
             .execute(
@@ -526,6 +583,26 @@ impl Repository {
             .map_err(storage_error)?;
         Ok(())
     }
+}
+
+fn group_metadata_fields(fields: Vec<MetadataField>) -> Vec<FileMetadataGroup> {
+    let mut groups = Vec::<FileMetadataGroup>::new();
+    for field in fields {
+        if groups
+            .last()
+            .is_some_and(|group| group.file_id == field.file_id)
+        {
+            if let Some(group) = groups.last_mut() {
+                group.fields.push(field);
+            }
+            continue;
+        }
+        groups.push(FileMetadataGroup {
+            file_id: field.file_id.clone(),
+            fields: vec![field],
+        });
+    }
+    groups
 }
 
 fn prepare_storage_path(path: &Path) -> Result<(), String> {

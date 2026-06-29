@@ -5,6 +5,7 @@ mod importer;
 mod metadata_extractor;
 mod metadata_normalizer;
 mod models;
+mod reporting;
 mod storage;
 
 use tauri::Manager;
@@ -24,10 +25,12 @@ pub fn run() {
             commands::create_case,
             commands::delete_case,
             commands::delete_file,
+            commands::export_case_report,
             commands::get_case,
             commands::get_case_files,
             commands::get_case_findings,
             commands::get_case_report,
+            commands::get_case_report_payload,
             commands::get_file,
             commands::get_file_findings,
             commands::get_file_metadata,
@@ -36,6 +39,7 @@ pub fn run() {
             commands::get_import_config,
             commands::import_files,
             commands::list_case_dashboard,
+            commands::open_exported_report,
             commands::update_case
         ])
         .run(tauri::generate_context!())
