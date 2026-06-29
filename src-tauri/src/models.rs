@@ -101,6 +101,54 @@ pub struct CaseReport {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ReportExportInput {
+    pub case_id: String,
+    pub format: String,
+    pub include_raw_metadata: bool,
+    pub output_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReportExportResult {
+    pub report: CaseReport,
+    pub output_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReportPayload {
+    pub case_record: CaseRecord,
+    pub files: Vec<EvidenceFile>,
+    pub findings: Vec<Finding>,
+    pub metadata_by_file: Vec<FileMetadataGroup>,
+    pub raw_metadata_by_file: Option<Vec<RawMetadataRecord>>,
+    pub summary: ReportSummary,
+    pub generated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileMetadataGroup {
+    pub file_id: String,
+    pub fields: Vec<MetadataField>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReportSummary {
+    pub evidence_count: u64,
+    pub finding_count: u64,
+    pub high_count: u64,
+    pub medium_count: u64,
+    pub low_count: u64,
+    pub complete_file_count: u64,
+    pub pending_file_count: u64,
+    pub error_file_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RawMetadataRecord {
     pub file_id: String,
     pub source: String,
