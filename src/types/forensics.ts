@@ -124,6 +124,14 @@ export interface FileMetadataGroup {
   fields: MetadataField[];
 }
 
+export interface ReportTimelineEntry {
+  fileId: string;
+  fileName: string;
+  fieldLabel: string;
+  value: string;
+  source: string;
+}
+
 export interface ReportSummary {
   evidenceCount: number;
   findingCount: number;
@@ -140,6 +148,7 @@ export interface ReportPayload {
   files: EvidenceFile[];
   findings: Finding[];
   metadataByFile: FileMetadataGroup[];
+  timeline: ReportTimelineEntry[];
   rawMetadataByFile?: RawMetadataRecord[] | null;
   summary: ReportSummary;
   generatedAt: string;

@@ -1,6 +1,7 @@
 import type { ImportConfig } from "../../types/forensics";
 import { ImportPickerButton } from "./ImportPickerButton";
 import { useFileDropImport } from "../../hooks/useFileDropImport";
+import { ErrorNotice } from "../ui/ErrorNotice";
 
 interface ImportDropzoneProps {
   config: ImportConfig | undefined;
@@ -29,7 +30,7 @@ export function ImportDropzone({ config, error, notice, isImporting, onImport }:
       </div>
       {isImporting ? <p className="mt-4 text-sm text-cyan">Importing files...</p> : null}
       {notice ? <p className="mt-4 text-sm text-cyan">{notice}</p> : null}
-      {error ? <p className="mt-4 text-sm text-danger">{error}</p> : null}
+      {error ? <div className="mt-4 text-left"><ErrorNotice detail={error} title="Import issue" /></div> : null}
     </section>
   );
 }

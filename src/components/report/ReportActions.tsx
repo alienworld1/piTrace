@@ -129,5 +129,5 @@ function slugify(value: string) {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
 
-  return slug || "pi-trace";
+  return slug || "pitrace";
 }

@@ -12,8 +12,8 @@ export function ReportEvidenceTable({ files }: ReportEvidenceTableProps) {
   }
 
   return (
-    <div className="overflow-hidden rounded-lg border border-line">
-      <table className="w-full table-fixed text-left text-sm">
+    <div className="overflow-x-auto rounded-lg border border-line">
+      <table className="min-w-[760px] w-full text-left text-sm">
         <thead className="bg-base text-xs uppercase tracking-[0.05em] text-primary-soft">
           <tr>
             <th className="px-4 py-3 font-semibold">File</th>

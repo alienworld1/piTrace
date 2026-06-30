@@ -11,12 +11,14 @@ export function ReportMetadataSection({ files, metadataByFile }: ReportMetadataS
 
   return (
     <div>
-      <p className="mb-4 text-sm text-muted">{fieldCount} normalized metadata fields are included in the report package.</p>
+      <p className="mb-4 text-sm leading-6 text-muted">
+        {fieldCount} normalized metadata fields are included in the report package. This preview shows up to 6 fields per file.
+      </p>
       <div className="space-y-3">
         {metadataByFile.map((group) => (
           <article className="rounded-lg border border-line bg-surface p-4" key={group.fileId}>
             <p className="text-sm font-semibold text-ink">{fileNamesById.get(group.fileId) ?? "Unknown evidence file"}</p>
-            <div className="mt-3 grid grid-cols-2 gap-2">
+            <div className="mt-3 grid gap-2 md:grid-cols-2">
               {group.fields.slice(0, 6).map((field) => (
                 <MetadataPreviewField field={field} key={field.id} />
               ))}

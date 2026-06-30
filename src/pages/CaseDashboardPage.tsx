@@ -27,7 +27,7 @@ export function CaseDashboardPage() {
   return (
     <div className="space-y-6">
       <PanelHeader eyebrow="Case dashboard" title="Local cases" />
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid gap-4 md:grid-cols-3">
         <MetricCard detail="Stored locally" label="Cases" value={String(cases.length)} />
         <MetricCard detail="Across local cases" label="Evidence files" value={String(data?.fileCount ?? 0)} />
         <MetricCard detail="Rule-based indicators" label="Findings" value={String(data?.findingCount ?? 0)} />
@@ -39,7 +39,7 @@ export function CaseDashboardPage() {
         <EmptyState description="No cases yet. Create a case to begin local forensic metadata analysis." title="No cases yet" />
       ) : null}
       {!isLoading && !error && cases.length > 0 ? (
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid gap-4 xl:grid-cols-2">
           {items.map((item) => (
             <CaseCard
               caseRecord={item.caseRecord}

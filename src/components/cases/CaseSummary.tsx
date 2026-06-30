@@ -18,7 +18,7 @@ export function CaseSummary({ caseRecord, action }: CaseSummaryProps) {
         </div>
         {action ? <div className="flex shrink-0 gap-3">{action}</div> : null}
       </div>
-      <dl className="mt-6 grid grid-cols-3 gap-4 text-sm">
+      <dl className="mt-6 grid gap-4 text-sm md:grid-cols-3">
         <div>
           <dt className="text-muted">Examiner</dt>
           <dd className="mt-1 text-ink">{caseRecord.examinerName ?? "Not assigned"}</dd>

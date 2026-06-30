@@ -23,7 +23,7 @@ export function ReportOptions({
             type="checkbox"
           />
           <span>
-            Include raw metadata appendix. This can contain sensitive paths, usernames, GPS data, and software history.
+            Include raw metadata appendix. Review before sharing because raw metadata can contain sensitive paths, usernames, GPS data, device details, and software history.
           </span>
         </label>
         <label className="flex max-w-3xl items-start gap-3 text-sm text-muted">
@@ -33,7 +33,7 @@ export function ReportOptions({
             onChange={(event) => onIncludeOriginalPathsChange(event.currentTarget.checked)}
             type="checkbox"
           />
-          <span>Include original file paths in exported reports. Paths can reveal usernames, folders, and case context.</span>
+          <span>Include original file paths in exported reports. Enable only when the receiving report needs full local path context.</span>
         </label>
       </div>
     </section>

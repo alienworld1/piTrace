@@ -1,7 +1,9 @@
 import { Link } from "react-router";
+import { useState } from "react";
 import type { EvidenceFile } from "../../types/forensics";
 import { formatBytes } from "../../utils/format";
 import { Badge } from "../ui/Badge";
+import { ErrorNotice } from "../ui/ErrorNotice";
 
 interface EvidenceListProps {
   deletingFileId?: string;
@@ -11,6 +13,20 @@ interface EvidenceListProps {
 }
 
 export function EvidenceList({ deletingFileId, files, isRemoveDisabled = false, onRemoveFile }: EvidenceListProps) {
+  const [visiblePathIds, setVisiblePathIds] = useState<Set<string>>(new Set());
+
+  function togglePath(fileId: string) {
+    setVisiblePathIds((current) => {
+      const next = new Set(current);
+      if (next.has(fileId)) {
+        next.delete(fileId);
+      } else {
+        next.add(fileId);
+      }
+      return next;
+    });
+  }
+
   return (
     <section className="panel-edge rounded-xl p-5">
       <div className="flex items-center justify-between">
@@ -26,7 +42,7 @@ export function EvidenceList({ deletingFileId, files, isRemoveDisabled = false, 
             <div className="flex items-start justify-between gap-3">
               <Link className="min-w-0 flex-1" to={`/cases/${file.caseId}/files/${file.id}`}>
                 <p className="truncate text-sm font-semibold text-ink">{file.fileName}</p>
-                <p className="mt-1 truncate text-xs text-muted">{parentPath(file.originalPath)}</p>
+                <p className="mt-1 truncate text-xs text-muted">Folder: {parentFolder(file.originalPath)}</p>
                 <p className="mt-1 text-xs text-muted">
                   {(file.detectedFileType ?? "Unrecognized")} · {formatBytes(file.sizeBytes)}
                 </p>
@@ -43,7 +59,13 @@ export function EvidenceList({ deletingFileId, files, isRemoveDisabled = false, 
                 </button>
               </div>
             </div>
-            {file.errorMessage ? <p className="mt-2 text-xs text-danger">{file.errorMessage}</p> : null}
+            <div className="mt-3">
+              <button className="text-xs font-semibold uppercase tracking-[0.05em] text-cyan" onClick={() => togglePath(file.id)} type="button">
+                {visiblePathIds.has(file.id) ? "Hide path" : "Show path"}
+              </button>
+              {visiblePathIds.has(file.id) ? <p className="mt-2 break-all technical text-xs text-muted">{file.originalPath}</p> : null}
+            </div>
+            {file.errorMessage ? <div className="mt-3"><ErrorNotice detail={file.errorMessage} title="File analysis issue" /></div> : null}
           </div>
         ))}
       </div>
@@ -51,12 +73,9 @@ export function EvidenceList({ deletingFileId, files, isRemoveDisabled = false, 
   );
 }
 
-function parentPath(path: string) {
+function parentFolder(path: string) {
   const normalized = path.replace(/\\/g, "/");
-  const index = normalized.lastIndexOf("/");
-  if (index <= 0) {
-    return path;
-  }
+  const parts = normalized.split("/").filter(Boolean);
 
-  return normalized.slice(0, index);
+  return parts.length > 1 ? parts[parts.length - 2] ?? "Current folder" : "Current folder";
 }

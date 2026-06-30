@@ -24,7 +24,7 @@ export function CaseCard({ caseRecord, fileCount, findingCount, highCount, isDel
         </Link>
         {highCount > 0 ? <Badge tone="high">{highCount} high</Badge> : <Badge tone="neutral">No high</Badge>}
       </div>
-      <div className="mt-6 grid grid-cols-3 gap-3 text-sm">
+      <div className="mt-6 grid gap-3 text-sm sm:grid-cols-3">
         <div>
           <p className="text-muted">Files</p>
           <p className="mt-1 technical text-ink">{fileCount}</p>

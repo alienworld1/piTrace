@@ -6,6 +6,7 @@ import { ReportEvidenceTable } from "./ReportEvidenceTable";
 import { ReportFindingsSection } from "./ReportFindingsSection";
 import { ReportMetadataSection } from "./ReportMetadataSection";
 import { ReportSummaryGrid } from "./ReportSummaryGrid";
+import { ReportTimelineSection } from "./ReportTimelineSection";
 
 interface ReportPreviewProps {
   payload: ReportPayload;
@@ -32,13 +33,16 @@ export function ReportPreview({ payload }: ReportPreviewProps) {
         <PreviewSection title="Findings">
           <ReportFindingsSection findings={payload.findings} />
         </PreviewSection>
+        <PreviewSection title="Timeline">
+          <ReportTimelineSection entries={payload.timeline} />
+        </PreviewSection>
         <PreviewSection title="Metadata appendix">
           <ReportMetadataSection files={payload.files} metadataByFile={payload.metadataByFile} />
         </PreviewSection>
         {payload.rawMetadataByFile ? (
           <PreviewSection title="Raw metadata appendix">
-            <p className="rounded-lg border border-line bg-base px-4 py-4 text-sm text-muted">
-              {payload.rawMetadataByFile.length} raw metadata records will be included in the exported report.
+            <p className="rounded-lg border border-line bg-base px-4 py-4 text-sm leading-6 text-muted">
+              {payload.rawMetadataByFile.length} raw metadata records will be included in the exported report. Review before sharing because raw metadata may contain paths, usernames, GPS data, device details, and software history.
             </p>
           </PreviewSection>
         ) : null}
