@@ -106,9 +106,10 @@ impl Repository {
     }
 
     pub fn update_case(&self, case_id: String, input: CaseInput) -> Result<CaseRecord, String> {
-        let connection = self.connect()?;
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction().map_err(storage_error)?;
         let now = now_iso();
-        let changed = connection
+        let changed = transaction
             .execute(
                 "UPDATE cases
                  SET name = ?1, examiner_name = ?2, notes = ?3, updated_at = ?4
@@ -127,14 +128,17 @@ impl Repository {
             return Err("Case not found".to_string());
         }
 
-        connection
+        invalidate_reports_in_transaction(&transaction, &case_id)?;
+        let updated = transaction
             .query_row(
                 "SELECT id, name, examiner_name, notes, created_at, updated_at
                  FROM cases WHERE id = ?1",
-                params![case_id],
+                params![&case_id],
                 case_from_row,
             )
-            .map_err(storage_error)
+            .map_err(storage_error)?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(updated)
     }
 
     pub fn case_exists(&self, case_id: &str) -> Result<bool, String> {
@@ -323,12 +327,7 @@ impl Repository {
         transaction
             .execute("DELETE FROM evidence_files WHERE id = ?1", params![file_id])
             .map_err(storage_error)?;
-        transaction
-            .execute(
-                "DELETE FROM reports WHERE case_id = ?1",
-                params![deleted.case_id],
-            )
-            .map_err(storage_error)?;
+        invalidate_reports_in_transaction(&transaction, &deleted.case_id)?;
         transaction
             .execute(
                 "UPDATE cases SET updated_at = ?1 WHERE id = ?2",
@@ -506,6 +505,7 @@ impl Repository {
         for finding in &findings {
             insert_finding(&transaction, finding)?;
         }
+        invalidate_reports_in_transaction(&transaction, case_id)?;
         transaction
             .execute(
                 "UPDATE cases SET updated_at = ?1 WHERE id = ?2",
@@ -583,6 +583,16 @@ impl Repository {
             .map_err(storage_error)?;
         Ok(())
     }
+}
+
+fn invalidate_reports_in_transaction(
+    transaction: &Transaction<'_>,
+    case_id: &str,
+) -> Result<(), String> {
+    transaction
+        .execute("DELETE FROM reports WHERE case_id = ?1", params![case_id])
+        .map_err(storage_error)?;
+    Ok(())
 }
 
 fn group_metadata_fields(fields: Vec<MetadataField>) -> Vec<FileMetadataGroup> {
@@ -1381,6 +1391,10 @@ mod tests {
                 notes: None,
             })
             .expect("case should be created");
+        fixture
+            .repository
+            .insert_report(&report("report-1", &case.id))
+            .expect("report should save");
 
         let updated = fixture
             .repository
@@ -1397,6 +1411,11 @@ mod tests {
         assert_eq!(updated.name, "Updated");
         assert_eq!(updated.examiner_name.as_deref(), Some("Analyst"));
         assert_eq!(updated.notes.as_deref(), Some("Notes"));
+        assert!(fixture
+            .repository
+            .get_case_report(&case.id)
+            .expect("report lookup")
+            .is_none());
 
         let missing = fixture
             .repository
@@ -1496,6 +1515,20 @@ mod tests {
                 vec![finding("finding-1", "file-1")],
             )
             .expect("atomic import should save");
+        fixture
+            .repository
+            .insert_report(&report("report-1", "case-1"))
+            .expect("report should save");
+        fixture
+            .repository
+            .replace_imported_files_with_metadata(
+                "case-1",
+                vec![file.clone()],
+                vec![raw_metadata("file-1", json!({"File": {"FileType": "PDF"}}))],
+                vec![metadata_field("field-1", "file-1")],
+                vec![finding("finding-1", "file-1")],
+            )
+            .expect("re-import should save");
 
         let files = fixture.repository.get_case_files("case-1").expect("files");
         let raw = fixture
@@ -1519,6 +1552,11 @@ mod tests {
         assert_eq!(fields[0].display_label.as_deref(), Some("Display name"));
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].id, "finding-1");
+        assert!(fixture
+            .repository
+            .get_case_report("case-1")
+            .expect("report lookup")
+            .is_none());
     }
 
     #[test]

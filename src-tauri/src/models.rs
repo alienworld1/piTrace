@@ -105,6 +105,8 @@ pub struct ReportExportInput {
     pub case_id: String,
     pub format: String,
     pub include_raw_metadata: bool,
+    #[serde(default)]
+    pub include_original_paths: bool,
     pub output_path: String,
 }
 

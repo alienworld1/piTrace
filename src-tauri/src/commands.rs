@@ -8,6 +8,7 @@ use crate::{
     reporting,
     storage::Repository,
 };
+use std::path::PathBuf;
 use tauri::{AppHandle, State};
 use tauri_plugin_opener::OpenerExt;
 
@@ -179,8 +180,10 @@ pub fn open_exported_report(
     if !matches!(report.format.as_str(), "html" | "json" | "pdf") {
         return Err("Report format is not supported for opening".to_string());
     }
+    let output_path = PathBuf::from(output_path);
+    reporting::validate_existing_report_path(&output_path, &report.format)?;
 
     app.opener()
-        .open_path(output_path, None::<&str>)
+        .open_path(output_path.to_string_lossy().to_string(), None::<&str>)
         .map_err(|error| format!("Could not open report: {error}"))
 }
