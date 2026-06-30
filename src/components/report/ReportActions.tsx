@@ -9,6 +9,7 @@ import { ActionButton } from "../ui/ActionButton";
 interface ReportActionsProps {
   caseRecord: CaseRecord;
   disabled?: boolean;
+  includeOriginalPaths: boolean;
   includeRawMetadata: boolean;
   onExported: () => Promise<void>;
   onExportedReportId: (reportId: string | undefined) => void;
@@ -25,6 +26,7 @@ const reportFormats: Array<{ format: ReportFormat; label: string; extension: str
 export function ReportActions({
   caseRecord,
   disabled = false,
+  includeOriginalPaths,
   includeRawMetadata,
   onExported,
   onExportedPath,
@@ -51,13 +53,14 @@ export function ReportActions({
       const result = await exportCaseReport({
         caseId: caseRecord.id,
         format,
+        includeOriginalPaths,
         includeRawMetadata,
         outputPath,
       });
       await onExported();
       onExportedReportId(result.report.id);
       onExportedPath(result.outputPath);
-      onExportMessage(`Report exported to ${result.outputPath}`, "success");
+      onExportMessage("Report exported successfully.", "success");
     } catch (error) {
       onExportMessage(toErrorMessage(error), "error");
     } finally {
@@ -67,7 +70,7 @@ export function ReportActions({
 
   return (
     <section className="panel-edge rounded-xl p-5">
-      <p className="text-xs font-semibold uppercase tracking-[0.05em] text-primary-soft">Export actions</p>
+      <p className="text-xs font-semibold uppercase tracking-wider text-primary-soft">Export actions</p>
       <div className="mt-4 flex flex-wrap gap-3">
         {reportFormats.map((reportFormat) => (
           <ActionButton

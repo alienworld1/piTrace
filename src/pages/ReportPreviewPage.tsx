@@ -11,7 +11,8 @@ import { formatDateTime } from "../utils/format";
 
 export function ReportPreviewPage() {
   const { caseId } = useParams();
-  const [includeRawMetadata, setIncludeRawMetadata] = useState(true);
+  const [includeRawMetadata, setIncludeRawMetadata] = useState(false);
+  const [includeOriginalPaths, setIncludeOriginalPaths] = useState(false);
   const [exportMessage, setExportMessage] = useState<string>();
   const [exportTone, setExportTone] = useState<"success" | "error">("success");
   const [lastExportPath, setLastExportPath] = useState<string>();
@@ -43,16 +44,22 @@ export function ReportPreviewPage() {
       <div className="rounded-xl border border-line bg-panel px-5 py-4 text-sm text-muted">
         {data.report ? (
           <>
-            Last preview record: <span className="text-ink">{formatDateTime(data.report.generatedAt)}</span> · Format:{" "}
+            Last exported report: <span className="text-ink">{formatDateTime(data.report.generatedAt)}</span> · Format:{" "}
             <span className="uppercase text-ink">{data.report.format}</span>
           </>
         ) : (
           "No exported report record exists yet."
         )}
       </div>
-      <ReportOptions includeRawMetadata={includeRawMetadata} onIncludeRawMetadataChange={setIncludeRawMetadata} />
+      <ReportOptions
+        includeOriginalPaths={includeOriginalPaths}
+        includeRawMetadata={includeRawMetadata}
+        onIncludeOriginalPathsChange={setIncludeOriginalPaths}
+        onIncludeRawMetadataChange={setIncludeRawMetadata}
+      />
       <ReportActions
         caseRecord={data.payload.caseRecord}
+        includeOriginalPaths={includeOriginalPaths}
         includeRawMetadata={includeRawMetadata}
         onExported={reload}
         onExportedPath={setLastExportPath}
@@ -70,14 +77,17 @@ export function ReportPreviewPage() {
         >
           {exportMessage}
           {lastExportPath && lastExportReportId && exportTone === "success" ? (
-            <ReportExportSuccessActions
-              onActionError={(message) => {
-                setExportMessage(message);
-                setExportTone("error");
-              }}
-              outputPath={lastExportPath}
-              reportId={lastExportReportId}
-            />
+            <>
+              <p className="mt-2 break-all technical text-xs">{lastExportPath}</p>
+              <ReportExportSuccessActions
+                onActionError={(message) => {
+                  setExportMessage(message);
+                  setExportTone("error");
+                }}
+                outputPath={lastExportPath}
+                reportId={lastExportReportId}
+              />
+            </>
           ) : null}
         </section>
       ) : null}

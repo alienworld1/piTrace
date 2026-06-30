@@ -110,6 +110,7 @@ export interface ReportExportInput {
   caseId: string;
   format: ReportFormat;
   includeRawMetadata: boolean;
+  includeOriginalPaths: boolean;
   outputPath: string;
 }
 

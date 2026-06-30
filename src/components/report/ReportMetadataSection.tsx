@@ -1,11 +1,13 @@
-import type { FileMetadataGroup, MetadataField } from "../../types/forensics";
+import type { EvidenceFile, FileMetadataGroup, MetadataField } from "../../types/forensics";
 
 interface ReportMetadataSectionProps {
+  files: EvidenceFile[];
   metadataByFile: FileMetadataGroup[];
 }
 
-export function ReportMetadataSection({ metadataByFile }: ReportMetadataSectionProps) {
+export function ReportMetadataSection({ files, metadataByFile }: ReportMetadataSectionProps) {
   const fieldCount = metadataByFile.reduce((count, group) => count + group.fields.length, 0);
+  const fileNamesById = new Map(files.map((file) => [file.id, file.fileName]));
 
   return (
     <div>
@@ -13,7 +15,7 @@ export function ReportMetadataSection({ metadataByFile }: ReportMetadataSectionP
       <div className="space-y-3">
         {metadataByFile.map((group) => (
           <article className="rounded-lg border border-line bg-surface p-4" key={group.fileId}>
-            <p className="technical text-xs uppercase tracking-[0.05em] text-primary-soft">{group.fileId}</p>
+            <p className="text-sm font-semibold text-ink">{fileNamesById.get(group.fileId) ?? "Unknown evidence file"}</p>
             <div className="mt-3 grid grid-cols-2 gap-2">
               {group.fields.slice(0, 6).map((field) => (
                 <MetadataPreviewField field={field} key={field.id} />

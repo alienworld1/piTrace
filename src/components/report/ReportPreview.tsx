@@ -33,7 +33,7 @@ export function ReportPreview({ payload }: ReportPreviewProps) {
           <ReportFindingsSection findings={payload.findings} />
         </PreviewSection>
         <PreviewSection title="Metadata appendix">
-          <ReportMetadataSection metadataByFile={payload.metadataByFile} />
+          <ReportMetadataSection files={payload.files} metadataByFile={payload.metadataByFile} />
         </PreviewSection>
         {payload.rawMetadataByFile ? (
           <PreviewSection title="Raw metadata appendix">
