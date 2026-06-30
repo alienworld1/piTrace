@@ -1,6 +1,6 @@
 use crate::models::{
-    CaseDashboardItem, CaseInput, CaseRecord, CaseReport, EvidenceFile, EvidenceStatus, Finding,
-    MetadataField, RawMetadataRecord,
+    CaseDashboardItem, CaseInput, CaseRecord, CaseReport, EvidenceFile, EvidenceStatus,
+    FileMetadataGroup, Finding, MetadataField, RawMetadataRecord,
 };
 use chrono::Utc;
 use rusqlite::{params, types::Type, Connection, OptionalExtension, Row, Transaction};
@@ -106,9 +106,10 @@ impl Repository {
     }
 
     pub fn update_case(&self, case_id: String, input: CaseInput) -> Result<CaseRecord, String> {
-        let connection = self.connect()?;
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction().map_err(storage_error)?;
         let now = now_iso();
-        let changed = connection
+        let changed = transaction
             .execute(
                 "UPDATE cases
                  SET name = ?1, examiner_name = ?2, notes = ?3, updated_at = ?4
@@ -127,14 +128,17 @@ impl Repository {
             return Err("Case not found".to_string());
         }
 
-        connection
+        invalidate_reports_in_transaction(&transaction, &case_id)?;
+        let updated = transaction
             .query_row(
                 "SELECT id, name, examiner_name, notes, created_at, updated_at
                  FROM cases WHERE id = ?1",
-                params![case_id],
+                params![&case_id],
                 case_from_row,
             )
-            .map_err(storage_error)
+            .map_err(storage_error)?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(updated)
     }
 
     pub fn case_exists(&self, case_id: &str) -> Result<bool, String> {
@@ -237,6 +241,49 @@ impl Repository {
             .map_err(storage_error)
     }
 
+    pub fn get_case_metadata(&self, case_id: &str) -> Result<Vec<FileMetadataGroup>, String> {
+        let connection = self.connect()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT metadata_fields.id, metadata_fields.file_id,
+                        metadata_fields.field_group, metadata_fields.field_key,
+                        metadata_fields.display_label, metadata_fields.value,
+                        metadata_fields.source, metadata_fields.normalized_category
+                 FROM metadata_fields
+                 INNER JOIN evidence_files ON evidence_files.id = metadata_fields.file_id
+                 WHERE evidence_files.case_id = ?1
+                 ORDER BY evidence_files.imported_at ASC, metadata_fields.rowid ASC",
+            )
+            .map_err(storage_error)?;
+        let rows = statement
+            .query_map(params![case_id], metadata_field_from_row)
+            .map_err(storage_error)?;
+        let fields = rows
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(storage_error)?;
+
+        Ok(group_metadata_fields(fields))
+    }
+
+    pub fn get_case_raw_metadata(&self, case_id: &str) -> Result<Vec<RawMetadataRecord>, String> {
+        let connection = self.connect()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT raw_metadata.file_id, raw_metadata.source, raw_metadata.extracted_at,
+                        raw_metadata.data_json
+                 FROM raw_metadata
+                 INNER JOIN evidence_files ON evidence_files.id = raw_metadata.file_id
+                 WHERE evidence_files.case_id = ?1
+                 ORDER BY evidence_files.imported_at ASC",
+            )
+            .map_err(storage_error)?;
+        let rows = statement
+            .query_map(params![case_id], raw_metadata_from_row)
+            .map_err(storage_error)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(storage_error)
+    }
+
     pub fn delete_case(&self, case_id: &str) -> Result<CaseRecord, String> {
         let mut connection = self.connect()?;
         let transaction = connection.transaction().map_err(storage_error)?;
@@ -280,12 +327,7 @@ impl Repository {
         transaction
             .execute("DELETE FROM evidence_files WHERE id = ?1", params![file_id])
             .map_err(storage_error)?;
-        transaction
-            .execute(
-                "DELETE FROM reports WHERE case_id = ?1",
-                params![deleted.case_id],
-            )
-            .map_err(storage_error)?;
+        invalidate_reports_in_transaction(&transaction, &deleted.case_id)?;
         transaction
             .execute(
                 "UPDATE cases SET updated_at = ?1 WHERE id = ?2",
@@ -388,6 +430,21 @@ impl Repository {
             .map_err(storage_error)
     }
 
+    pub fn get_report(&self, report_id: &str) -> Result<CaseReport, String> {
+        let connection = self.connect()?;
+        connection
+            .query_row(
+                "SELECT id, case_id, generated_at, format, include_raw_metadata, output_path
+                 FROM reports
+                 WHERE id = ?1",
+                params![report_id],
+                case_report_from_row,
+            )
+            .optional()
+            .map_err(storage_error)?
+            .ok_or_else(|| "Report not found".to_string())
+    }
+
     pub fn replace_imported_files_with_metadata(
         &self,
         case_id: &str,
@@ -448,6 +505,7 @@ impl Repository {
         for finding in &findings {
             insert_finding(&transaction, finding)?;
         }
+        invalidate_reports_in_transaction(&transaction, case_id)?;
         transaction
             .execute(
                 "UPDATE cases SET updated_at = ?1 WHERE id = ?2",
@@ -506,8 +564,7 @@ impl Repository {
         Ok(())
     }
 
-    #[cfg(test)]
-    fn insert_report(&self, report: &CaseReport) -> Result<(), String> {
+    pub fn insert_report(&self, report: &CaseReport) -> Result<(), String> {
         let connection = self.connect()?;
         connection
             .execute(
@@ -526,6 +583,36 @@ impl Repository {
             .map_err(storage_error)?;
         Ok(())
     }
+}
+
+fn invalidate_reports_in_transaction(
+    transaction: &Transaction<'_>,
+    case_id: &str,
+) -> Result<(), String> {
+    transaction
+        .execute("DELETE FROM reports WHERE case_id = ?1", params![case_id])
+        .map_err(storage_error)?;
+    Ok(())
+}
+
+fn group_metadata_fields(fields: Vec<MetadataField>) -> Vec<FileMetadataGroup> {
+    let mut groups = Vec::<FileMetadataGroup>::new();
+    for field in fields {
+        if groups
+            .last()
+            .is_some_and(|group| group.file_id == field.file_id)
+        {
+            if let Some(group) = groups.last_mut() {
+                group.fields.push(field);
+            }
+            continue;
+        }
+        groups.push(FileMetadataGroup {
+            file_id: field.file_id.clone(),
+            fields: vec![field],
+        });
+    }
+    groups
 }
 
 fn prepare_storage_path(path: &Path) -> Result<(), String> {
@@ -1304,6 +1391,10 @@ mod tests {
                 notes: None,
             })
             .expect("case should be created");
+        fixture
+            .repository
+            .insert_report(&report("report-1", &case.id))
+            .expect("report should save");
 
         let updated = fixture
             .repository
@@ -1320,6 +1411,11 @@ mod tests {
         assert_eq!(updated.name, "Updated");
         assert_eq!(updated.examiner_name.as_deref(), Some("Analyst"));
         assert_eq!(updated.notes.as_deref(), Some("Notes"));
+        assert!(fixture
+            .repository
+            .get_case_report(&case.id)
+            .expect("report lookup")
+            .is_none());
 
         let missing = fixture
             .repository
@@ -1419,6 +1515,20 @@ mod tests {
                 vec![finding("finding-1", "file-1")],
             )
             .expect("atomic import should save");
+        fixture
+            .repository
+            .insert_report(&report("report-1", "case-1"))
+            .expect("report should save");
+        fixture
+            .repository
+            .replace_imported_files_with_metadata(
+                "case-1",
+                vec![file.clone()],
+                vec![raw_metadata("file-1", json!({"File": {"FileType": "PDF"}}))],
+                vec![metadata_field("field-1", "file-1")],
+                vec![finding("finding-1", "file-1")],
+            )
+            .expect("re-import should save");
 
         let files = fixture.repository.get_case_files("case-1").expect("files");
         let raw = fixture
@@ -1442,6 +1552,11 @@ mod tests {
         assert_eq!(fields[0].display_label.as_deref(), Some("Display name"));
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].id, "finding-1");
+        assert!(fixture
+            .repository
+            .get_case_report("case-1")
+            .expect("report lookup")
+            .is_none());
     }
 
     #[test]

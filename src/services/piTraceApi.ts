@@ -10,6 +10,9 @@ import type {
   ImportConfig,
   MetadataField,
   RawMetadataRecord,
+  ReportExportInput,
+  ReportExportResult,
+  ReportPayload,
 } from "../types/forensics";
 
 export function listCaseDashboard() {
@@ -74,4 +77,16 @@ export function getFinding(findingId: string) {
 
 export function getCaseReport(caseId: string) {
   return invoke<CaseReport | null>("get_case_report", { caseId });
+}
+
+export function getCaseReportPayload(caseId: string, includeRawMetadata: boolean) {
+  return invoke<ReportPayload>("get_case_report_payload", { caseId, includeRawMetadata });
+}
+
+export function exportCaseReport(input: ReportExportInput) {
+  return invoke<ReportExportResult>("export_case_report", { input });
+}
+
+export function openExportedReport(reportId: string) {
+  return invoke<void>("open_exported_report", { reportId });
 }

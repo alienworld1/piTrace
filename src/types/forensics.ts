@@ -1,4 +1,5 @@
 export type EvidenceStatus = "pending" | "analyzing" | "complete" | "error";
+export type ReportFormat = "html" | "json" | "pdf";
 export type Severity = "low" | "medium" | "high";
 export type Confidence = "low" | "medium" | "high";
 export type FindingCategory =
@@ -100,9 +101,48 @@ export interface CaseReport {
   id: string;
   caseId: string;
   generatedAt: string;
-  format: "html" | "json" | "pdf";
+  format: ReportFormat;
   includeRawMetadata: boolean;
   outputPath?: string;
+}
+
+export interface ReportExportInput {
+  caseId: string;
+  format: ReportFormat;
+  includeRawMetadata: boolean;
+  includeOriginalPaths: boolean;
+  outputPath: string;
+}
+
+export interface ReportExportResult {
+  report: CaseReport;
+  outputPath: string;
+}
+
+export interface FileMetadataGroup {
+  fileId: string;
+  fields: MetadataField[];
+}
+
+export interface ReportSummary {
+  evidenceCount: number;
+  findingCount: number;
+  highCount: number;
+  mediumCount: number;
+  lowCount: number;
+  completeFileCount: number;
+  pendingFileCount: number;
+  errorFileCount: number;
+}
+
+export interface ReportPayload {
+  caseRecord: CaseRecord;
+  files: EvidenceFile[];
+  findings: Finding[];
+  metadataByFile: FileMetadataGroup[];
+  rawMetadataByFile?: RawMetadataRecord[] | null;
+  summary: ReportSummary;
+  generatedAt: string;
 }
 
 export interface ImportDialogFilter {

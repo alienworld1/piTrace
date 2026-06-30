@@ -2,11 +2,15 @@ use crate::{
     importer,
     models::{
         CaseDashboardItem, CaseInput, CaseRecord, CaseReport, EvidenceFile, Finding,
-        ImportBatchResult, ImportConfig, MetadataField, RawMetadataRecord,
+        ImportBatchResult, ImportConfig, MetadataField, RawMetadataRecord, ReportExportInput,
+        ReportExportResult, ReportPayload,
     },
+    reporting,
     storage::Repository,
 };
+use std::path::PathBuf;
 use tauri::{AppHandle, State};
+use tauri_plugin_opener::OpenerExt;
 
 #[tauri::command]
 pub fn get_import_config() -> Result<ImportConfig, String> {
@@ -135,4 +139,51 @@ pub fn get_case_report(
     case_id: String,
 ) -> Result<Option<CaseReport>, String> {
     repository.get_case_report(&case_id)
+}
+
+#[tauri::command]
+pub async fn get_case_report_payload(
+    repository: State<'_, Repository>,
+    case_id: String,
+    include_raw_metadata: bool,
+) -> Result<ReportPayload, String> {
+    let repository = repository.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        reporting::build_report_payload(&repository, &case_id, include_raw_metadata)
+    })
+    .await
+    .map_err(|error| format!("Report preview worker failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn export_case_report(
+    repository: State<'_, Repository>,
+    input: ReportExportInput,
+) -> Result<ReportExportResult, String> {
+    let repository = repository.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || reporting::export_case_report(&repository, input))
+        .await
+        .map_err(|error| format!("Report export worker failed: {error}"))?
+}
+
+#[tauri::command]
+pub fn open_exported_report(
+    app: AppHandle,
+    repository: State<'_, Repository>,
+    report_id: String,
+) -> Result<(), String> {
+    let report = repository.get_report(&report_id)?;
+    let output_path = report
+        .output_path
+        .ok_or_else(|| "Report does not have an exported file path".to_string())?;
+
+    if !matches!(report.format.as_str(), "html" | "json" | "pdf") {
+        return Err("Report format is not supported for opening".to_string());
+    }
+    let output_path = PathBuf::from(output_path);
+    reporting::validate_existing_report_path(&output_path, &report.format)?;
+
+    app.opener()
+        .open_path(output_path.to_string_lossy().to_string(), None::<&str>)
+        .map_err(|error| format!("Could not open report: {error}"))
 }
