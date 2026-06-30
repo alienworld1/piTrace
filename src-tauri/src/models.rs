@@ -124,6 +124,7 @@ pub struct ReportPayload {
     pub files: Vec<EvidenceFile>,
     pub findings: Vec<Finding>,
     pub metadata_by_file: Vec<FileMetadataGroup>,
+    pub timeline: Vec<ReportTimelineEntry>,
     pub raw_metadata_by_file: Option<Vec<RawMetadataRecord>>,
     pub summary: ReportSummary,
     pub generated_at: String,
@@ -134,6 +135,16 @@ pub struct ReportPayload {
 pub struct FileMetadataGroup {
     pub file_id: String,
     pub fields: Vec<MetadataField>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReportTimelineEntry {
+    pub file_id: String,
+    pub file_name: String,
+    pub field_label: String,
+    pub value: String,
+    pub source: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

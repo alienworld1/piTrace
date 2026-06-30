@@ -2,7 +2,7 @@ use crate::{
     models::{
         CaseRecord, CaseReport, EvidenceFile, EvidenceStatus, FileMetadataGroup, Finding,
         MetadataField, RawMetadataRecord, ReportExportInput, ReportExportResult, ReportPayload,
-        ReportSummary,
+        ReportSummary, ReportTimelineEntry,
     },
     storage::{now_iso, Repository},
 };
@@ -34,7 +34,7 @@ struct ReportExportDocument<'a> {
     files: Vec<ReportEvidenceItem<'a>>,
     findings: &'a [Finding],
     metadata_by_file: Vec<ReportMetadataGroup<'a>>,
-    timeline: Vec<ReportTimelineEntry<'a>>,
+    timeline: Vec<ReportTimelineEntry>,
     #[serde(skip_serializing_if = "Option::is_none")]
     raw_metadata_by_file: Option<&'a [RawMetadataRecord]>,
     summary: &'a ReportSummary,
@@ -69,16 +69,6 @@ struct ReportMetadataGroup<'a> {
     fields: &'a [MetadataField],
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ReportTimelineEntry<'a> {
-    file_id: &'a str,
-    file_name: &'a str,
-    field_label: &'a str,
-    value: &'a str,
-    source: &'a str,
-}
-
 pub fn build_report_payload(
     repository: &Repository,
     case_id: &str,
@@ -93,6 +83,7 @@ pub fn build_report_payload(
             .then_with(|| right.created_at.cmp(&left.created_at))
     });
     let metadata_by_file = repository.get_case_metadata(case_id)?;
+    let timeline = build_timeline_entries(&files, &metadata_by_file);
     let raw_metadata_by_file = if include_raw_metadata {
         Some(repository.get_case_raw_metadata(case_id)?)
     } else {
@@ -105,6 +96,7 @@ pub fn build_report_payload(
         files,
         findings,
         metadata_by_file,
+        timeline,
         raw_metadata_by_file,
         generated_at: now_iso(),
     })
@@ -213,14 +205,12 @@ fn build_export_document(
             fields: &group.fields,
         })
         .collect::<Vec<_>>();
-    let timeline = build_timeline_entries(&payload.files, &payload.metadata_by_file);
-
     ReportExportDocument {
         case_record: &payload.case_record,
         files,
         findings: &payload.findings,
         metadata_by_file,
-        timeline,
+        timeline: payload.timeline.clone(),
         raw_metadata_by_file: payload.raw_metadata_by_file.as_deref(),
         summary: &payload.summary,
         generated_at: &payload.generated_at,
@@ -233,21 +223,24 @@ fn build_export_document(
     }
 }
 
-fn build_timeline_entries<'a>(
-    files: &'a [EvidenceFile],
-    groups: &'a [FileMetadataGroup],
-) -> Vec<ReportTimelineEntry<'a>> {
+fn build_timeline_entries(
+    files: &[EvidenceFile],
+    groups: &[FileMetadataGroup],
+) -> Vec<ReportTimelineEntry> {
     let mut entries = Vec::new();
     for group in groups {
-        let file_name = file_name_for_id(files, &group.file_id);
+        let file_name = file_name_for_id(files, &group.file_id).to_string();
         for field in &group.fields {
             if field.normalized_category.as_deref() == Some("timeline") {
                 entries.push(ReportTimelineEntry {
-                    file_id: &group.file_id,
-                    file_name,
-                    field_label: field.display_label.as_deref().unwrap_or(&field.key),
-                    value: &field.value,
-                    source: &field.source,
+                    file_id: group.file_id.clone(),
+                    file_name: file_name.clone(),
+                    field_label: field
+                        .display_label
+                        .clone()
+                        .unwrap_or_else(|| field.key.clone()),
+                    value: field.value.clone(),
+                    source: field.source.clone(),
                 });
             }
         }
@@ -654,7 +647,7 @@ fn evidence_table(files: &[ReportEvidenceItem<'_>]) -> Markup {
     }
 }
 
-fn timeline_table(entries: &[ReportTimelineEntry<'_>]) -> Markup {
+fn timeline_table(entries: &[ReportTimelineEntry]) -> Markup {
     html! {
         @if entries.is_empty() {
             p class="muted" { "No normalized timeline metadata fields are recorded for this case." }
